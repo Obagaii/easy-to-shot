@@ -1,0 +1,58 @@
+:root {
+  --workbench-gap: 16px;
+  --workbench-transition: 180ms ease;
+  --color-border: #e3e6eb;
+  --color-text-muted: #6b7280;
+}
+
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+
+.workbench { min-height: 100vh; }
+
+.workbench-sider {
+  background: #ffffff;
+  border-right: 1px solid var(--color-border);
+}
+
+.workbench-brand {
+  padding: var(--workbench-gap);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.workbench-content { padding: 24px; }
+
+.workbench-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--workbench-gap);
+}
+
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--workbench-gap);
+}
+
+.history-card {
+  transition: opacity var(--workbench-transition), transform var(--workbench-transition);
+}
+
+.history-thumb { height: 96px; border-radius: 4px; background: #cfe0ff; }
+.history-preview { height: 200px; margin-bottom: 12px; background: #cfe0ff; }
+
+.settings-form { max-width: 480px; }
+
+.page-hint { color: var(--color-text-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
