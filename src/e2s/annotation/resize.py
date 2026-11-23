@@ -5,10 +5,13 @@ from math import hypot
 from PySide6.QtCore import QPointF, QRectF
 
 from e2s.annotation.elements import (
+    MAX_FONT_SIZE_PX,
     MAX_STROKE_WIDTH_PX,
+    MIN_FONT_SIZE_PX,
     Element,
     Point,
     Stroke,
+    Text,
 )
 from e2s.annotation.renderer import element_bounds
 from e2s.capture.geometry import ResizeHandle
@@ -20,7 +23,7 @@ class Endpoint(Enum):
 
 
 def resize_bounds(element: Element) -> QRectF:
-    if len(element.points) == 1:
+    if isinstance(element, Text) or (isinstance(element, Stroke) and len(element.points) == 1):
         return element_bounds(element)
     points = element.points
     xs, ys = zip(*points)
@@ -48,10 +51,18 @@ class ElementResize:
         horizontal, vertical = self.handle.value
         left, top = self.bounds.left(), self.bounds.top()
         width, height = self.bounds.width(), self.bounds.height()
-        if len(element.points) == 1:
+        if isinstance(element, Text) or (isinstance(element, Stroke) and len(element.points) == 1):
             anchor = (left + width if horizontal < 0 else left, top + height if vertical < 0 else top)
             diagonal_x, diagonal_y = horizontal * width, vertical * height
             scale = 1 + (dx_px * diagonal_x + dy_px * diagonal_y) / (width**2 + height**2)
+            if isinstance(element, Text):
+                old_size = element.font_size_px
+                size = max(MIN_FONT_SIZE_PX, min(MAX_FONT_SIZE_PX, round(old_size * scale)))
+                return replace(
+                    element, origin=_scale_from(element.origin, anchor, size / old_size),
+                    font_size_px=size,
+                )
+
             old_size = element.width_px
             size = max(1, min(MAX_STROKE_WIDTH_PX, round(old_size * scale)))
             center = _scale_from(element.points[0], anchor, size / old_size)

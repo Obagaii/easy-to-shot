@@ -3,6 +3,8 @@ from math import hypot
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
+    QFont,
+    QFontMetricsF,
     QImage,
     QPainter,
     QPainterPath,
@@ -10,7 +12,7 @@ from PySide6.QtGui import (
     QPen,
 )
 
-from e2s.annotation.elements import Element, Point, Stroke, Tool
+from e2s.annotation.elements import Element, Point, Stroke, Text, Tool
 
 
 def render_annotations(
@@ -29,12 +31,16 @@ def render_annotations(
                     raise MemoryError("Unable to allocate the annotation image")
                 painter.translate(-left_px, -top_px)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            path, is_filled = _stroke_path(element)
-            color = QColor(element.color)
-            if is_filled:
-                painter.fillPath(path, color)
+                painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            if isinstance(element, Text):
+                _draw_text(painter, element)
             else:
-                painter.strokePath(path, _pen(color, element.width_px))
+                path, is_filled = _stroke_path(element)
+                color = QColor(element.color)
+                if is_filled:
+                    painter.fillPath(path, color)
+                else:
+                    painter.strokePath(path, _pen(color, element.width_px))
     finally:
         if painter.isActive():
             painter.end()
@@ -45,18 +51,56 @@ def hit_test(elements: tuple[Element, ...], point: Point, tolerance_px: float) -
     position = QPointF(*point)
     for index in range(len(elements) - 1, -1, -1):
         element = elements[index]
-        path, is_filled = _stroke_path(element)
-        if is_filled and path.contains(position):
-            return index
-        width = 0 if is_filled else element.width_px
-        if _stroked(path, width + 2 * tolerance_px).contains(position):
-            return index
+        if isinstance(element, Stroke):
+            path, is_filled = _stroke_path(element)
+            if is_filled and path.contains(position):
+                return index
+            width = 0 if is_filled else element.width_px
+            if _stroked(path, width + 2 * tolerance_px).contains(position):
+                return index
+        else:
+            bounds = element_bounds(element)
+            if bounds.adjusted(-tolerance_px, -tolerance_px, tolerance_px, tolerance_px).contains(
+                position
+            ):
+                return index
     return None
 
 
 def element_bounds(element: Element) -> QRectF:
+    if isinstance(element, Text):
+        return _text_bounds(element)
     path, is_filled = _stroke_path(element)
     return path.boundingRect() if is_filled else _stroked(path, element.width_px).boundingRect()
+
+
+def annotation_font(font_size_px: int) -> QFont:
+    font = QFont()
+    font.setPixelSize(font_size_px)
+    return font
+
+
+def _text_bounds(element: Text) -> QRectF:
+    metrics = QFontMetricsF(annotation_font(element.font_size_px))
+    x, y = element.origin
+    lines = element.value.split("\n")
+    bounds = QRectF(x, y, 0, metrics.height() + (len(lines) - 1) * metrics.lineSpacing())
+    for index, line in enumerate(lines):
+        baseline = y + metrics.ascent() + index * metrics.lineSpacing()
+        layout = QRectF(x, y, metrics.horizontalAdvance(line), bounds.height())
+        bounds = bounds.united(layout)
+        bounds = bounds.united(metrics.boundingRect(line).translated(x, baseline))
+    return bounds
+
+
+def _draw_text(painter: QPainter, element: Text) -> None:
+    font = annotation_font(element.font_size_px)
+    painter.setFont(font)
+    painter.setPen(QColor(element.color))
+    metrics = QFontMetricsF(font)
+    x, y = element.origin
+    for index, line in enumerate(element.value.split("\n")):
+        painter.drawText(QPointF(x, y + metrics.ascent() + index * metrics.lineSpacing()), line)
 
 
 def _pen(color: QColor, width_px: int) -> QPen:

@@ -13,13 +13,14 @@ from PySide6.QtGui import (
     QPen,
     QResizeEvent,
 )
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from e2s.annotation.document import AnnotationDocument
-from e2s.annotation.elements import Element, Point, Stroke, Tool
-from e2s.annotation.renderer import element_bounds, hit_test, render_annotations
+from e2s.annotation.elements import Element, Point, Stroke, Text, Tool
+from e2s.annotation.renderer import annotation_font, element_bounds, hit_test, render_annotations
 from e2s.annotation.resize import ElementResize, Endpoint, resize_bounds
 from e2s.capture.geometry import ResizeHandle
+from e2s.ui.native.annotation_text import AnnotationTextEditor
 from e2s.ui.native.annotation_toolbar import AnnotationToolbar
 from e2s.ui.native.resize_handles import CORNERS, handle_positions, resize_cursor
 
@@ -63,6 +64,9 @@ class AnnotationCanvas(QWidget):
         self._gesture: Gesture | None = None
         self._preview = QImage()
         self._preview_revision = -1
+        self._editor: AnnotationTextEditor | None = None
+        self._text_origin: Point | None = None
+        self._text_index: int | None = None
         self._is_output_pending = False
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -74,6 +78,9 @@ class AnnotationCanvas(QWidget):
         self._toolbar.delete_requested.connect(self._delete_selected)
         self._toolbar.copy_requested.connect(self._request_copy)
         self._toolbar.save_requested.connect(self._request_save)
+        self._toolbar.text_accepted.connect(self._accept_text)
+        self._toolbar.text_cancelled.connect(self._cancel_text)
+        self._toolbar.text_style_changed.connect(self._update_text_style)
         self._feedback = QLabel(self)
         self._feedback.setWordWrap(True)
         self._feedback.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -85,7 +92,7 @@ class AnnotationCanvas(QWidget):
 
     @property
     def can_adjust_selection(self) -> bool:
-        return self._gesture is None and not self._is_output_pending
+        return self._editor is None and self._gesture is None and not self._is_output_pending
 
     def can_move_selection_at(self, position: QPointF) -> bool:
         return self._tool is Tool.SELECT and self._element_at(self._source_point(position)) is None
@@ -107,7 +114,7 @@ class AnnotationCanvas(QWidget):
         self.update()
 
     def focus_input(self) -> None:
-        self.setFocus()
+        (self._editor or self).setFocus()
 
     def set_feedback(self, message: str) -> None:
         self._feedback.setText(message)
@@ -128,7 +135,7 @@ class AnnotationCanvas(QWidget):
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             if self._selection_preview is None:
                 painter.drawImage(self._target, self._preview_image())
-                if self._selection is not None:
+                if self._selection is not None and self._editor is None:
                     self._draw_selection(painter)
             else:
                 # Keep existing marks aligned to the frozen frame throughout the drag.
@@ -146,6 +153,7 @@ class AnnotationCanvas(QWidget):
         if (
             event.button() != Qt.MouseButton.LeftButton
             or self._is_output_pending
+            or self._editor is not None
         ):
             return
         self.setFocus()
@@ -166,12 +174,39 @@ class AnnotationCanvas(QWidget):
             self.setCursor(self._element_resize_cursor(handle))
             return
 
+        if self._tool is Tool.TEXT:
+            index = self._hit(point)
+            if index is not None and isinstance(self._document.elements[index], Text):
+                self._selection = index
+                self._refresh()
+            else:
+                self._start_text(point)
+            return
+
         index = self._element_at(point) if self._tool is Tool.SELECT else None
         self._selection = index
         if self._tool is not Tool.SELECT or index is not None:
             self._gesture = Gesture(point, index)
             self._update_gesture(point)
         self._refresh()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._tool in (Tool.SELECT, Tool.TEXT)
+            and not self._is_output_pending
+            and self._editor is None
+            and self._target.contains(event.position())
+        ):
+            point = self._source_point(event.position())
+            index = self._hit(point)
+            if index is not None:
+                element = self._document.elements[index]
+                if isinstance(element, Text):
+                    self._gesture = None
+                    self._start_text(element.origin, index, element)
+        else:
+            super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._gesture is not None:
@@ -197,12 +232,14 @@ class AnnotationCanvas(QWidget):
         if self._selection_preview is not None:
             super().keyPressEvent(event)
         elif event.key() == Qt.Key.Key_Escape:
-            if self._gesture is not None:
+            if self._editor is not None:
+                self._cancel_text()
+            elif self._gesture is not None:
                 self._gesture = None
                 self._refresh()
             else:
                 self.cancelled.emit()
-        elif self._is_output_pending or self._gesture is not None:
+        elif self._editor is not None or self._is_output_pending or self._gesture is not None:
             super().keyPressEvent(event)
         elif event.matches(QKeySequence.StandardKey.Undo):
             self._undo()
@@ -266,7 +303,7 @@ class AnnotationCanvas(QWidget):
 
     def _source_point(self, position: QPointF) -> Point:
         x_dip, y_dip = position.x(), position.y()
-        if self._tool is not Tool.SELECT:
+        if self._tool not in (Tool.SELECT, Tool.TEXT):
             # A fullscreen crop must also reach the last source pixel at fractional DPI.
             if x_dip >= self.width() - 1 and self._target.right() >= self.width() - 1:
                 x_dip = self.width()
@@ -301,7 +338,7 @@ class AnnotationCanvas(QWidget):
         return None
 
     def _resize_handle_at(self, position: QPointF) -> ResizeHandle | Endpoint | None:
-        if self._selection is None or not self._target.contains(position):
+        if self._selection is None or not self._target.contains(position) or self._editor is not None:
             return None
         element = self._document.elements[self._selection]
         handles = self._element_handles(element)
@@ -336,6 +373,8 @@ class AnnotationCanvas(QWidget):
             elif self._tool is Tool.SELECT:
                 if self._element_at(self._source_point(position)) is not None:
                     cursor = Qt.CursorShape.SizeAllCursor
+            elif self._tool is Tool.TEXT:
+                cursor = Qt.CursorShape.IBeamCursor
             else:
                 cursor = Qt.CursorShape.CrossCursor
         self.setCursor(cursor)
@@ -344,6 +383,11 @@ class AnnotationCanvas(QWidget):
         gesture = self._gesture
         elements = self._document.elements
         origin_px = self._document.origin_px
+        if self._text_index is not None:
+            index = self._text_index
+            return render_annotations(
+                self._document.source, elements[:index] + elements[index + 1:], origin_px
+            )
         if gesture is not None and gesture.draft is not None and gesture.index is not None:
             index = gesture.index
             return render_annotations(
@@ -382,6 +426,76 @@ class AnnotationCanvas(QWidget):
             self._display_point((bounds.right(), bounds.bottom())),
         )
 
+    def _start_text(
+        self, point: Point, index: int | None = None, existing: Text | None = None
+    ) -> None:
+        self._set_tool(Tool.TEXT)
+        self._text_origin = point
+        self._text_index = index
+        self._selection = index
+        if existing is not None:
+            self._toolbar.set_text_style(existing.color, existing.font_size_px)
+        editor = AnnotationTextEditor(self)
+        self._editor = editor
+        editor.accepted.connect(self._accept_text)
+        editor.cancelled.connect(self._cancel_text)
+        editor.setPlainText(existing.value if existing is not None else "")
+        self._toolbar.set_text_editing(True)
+        self._update_text_style()
+        self._place_controls()
+        editor.show()
+        editor.setFocus()
+        self._refresh()
+
+    def _update_text_style(self) -> None:
+        if self._editor is None:
+            return
+        scale = self._target.height() / self._height_px
+        self._editor.setFont(annotation_font(max(8, round(self._toolbar.font_size_px * scale))))
+        color = QColor(self._toolbar.color)
+        background = "#242b35" if color.lightness() > 150 else "#ffffff"
+        self._editor.setStyleSheet(
+            f"QPlainTextEdit {{color: {color.name()}; background: {background};"
+            " border: 2px solid #72a4ed;}"
+        )
+
+    def _accept_text(self) -> None:
+        editor = self._editor
+        origin = self._text_origin
+        if editor is None or origin is None:
+            return
+        if editor.has_preedit:
+            QApplication.inputMethod().commit()
+            if editor.has_preedit:
+                editor.setFocus()
+                return
+        value = editor.toPlainText()
+        if value.strip():
+            element = Text(origin, value, self._toolbar.color, self._toolbar.font_size_px)
+            if self._text_index is None:
+                self._selection = self._document.add(element)
+            else:
+                self._document.replace(self._text_index, element)
+        elif self._text_index is not None:
+            self._document.delete(self._text_index)
+            self._selection = None
+        self._close_editor()
+
+    def _cancel_text(self) -> None:
+        if self._editor is not None:
+            self._close_editor()
+
+    def _close_editor(self) -> None:
+        editor, self._editor = self._editor, None
+        self._text_origin = None
+        self._text_index = None
+        editor.hide()
+        editor.deleteLater()
+        self._toolbar.set_text_editing(False)
+        self._place_controls()
+        self.setFocus()
+        self._refresh()
+
     def _undo(self) -> None:
         self._document.undo()
         self._selection = None
@@ -411,8 +525,11 @@ class AnnotationCanvas(QWidget):
             self.save_requested.emit()
 
     def _refresh(self) -> None:
-        self._toolbar.set_element_selected(self._selection is not None)
-        self._toolbar.set_history(self._document.can_undo, self._document.can_redo)
+        can_edit = self._editor is None
+        self._toolbar.set_element_selected(can_edit and self._selection is not None)
+        self._toolbar.set_history(
+            can_edit and self._document.can_undo, can_edit and self._document.can_redo
+        )
         self.update()
 
     def _place_controls(self) -> None:
@@ -428,6 +545,19 @@ class AnnotationCanvas(QWidget):
             max(0, min(y, self.height() - toolbar_height - gap)),
         )
 
+        if self._editor is not None and self._text_origin is not None:
+            origin = self._display_point(self._text_origin)
+            width = min(340, max(1, self.width() - 2 * gap))
+            height = min(132, max(1, self.height() - 2 * gap))
+            x = max(0, min(round(origin.x()), self.width() - width - gap))
+            y = max(0, min(round(origin.y()), self.height() - height - gap))
+            editor_rect = QRectF(x, y, width, height)
+            if editor_rect.intersects(QRectF(self._toolbar.geometry())):
+                below = self._toolbar.y() + toolbar_height + gap
+                above = self._toolbar.y() - height - gap
+                y = below if below + height + gap <= self.height() else max(0, above)
+            self._editor.setGeometry(x, y, width, height)
+            self._toolbar.raise_()
         if not self._feedback.isHidden():
             self._place_feedback()
 
