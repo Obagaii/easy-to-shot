@@ -38,6 +38,7 @@ class Tray(QSystemTrayIcon):
         self.setToolTip("Easy to Shot")
         self._menu = QMenu()
         self.setContextMenu(self._menu)
+        self._menu.addAction('新建截图', self.capture_requested.emit)
         self._menu.addAction("打开工作台", self.workbench_requested.emit)
         self._menu.addAction("截图热键", self.settings_requested.emit)
         self._menu.addSeparator()
@@ -46,6 +47,9 @@ class Tray(QSystemTrayIcon):
 
     def dismiss_menu(self) -> None:
         self._menu.hide()
+
+    def notify(self, message: str) -> None:
+        self.showMessage('Easy to Shot', message)
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == self.ActivationReason.DoubleClick:

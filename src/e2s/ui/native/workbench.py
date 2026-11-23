@@ -42,6 +42,8 @@ class Workbench(QMainWindow):
         )
 
         content = QWidget(self)
+        capture_button = QPushButton('新建截图')
+        capture_button.clicked.connect(self.capture_requested.emit)
         self._layout = QVBoxLayout(content)
         self._layout.setContentsMargins(24, 24, 24, 24)
         hotkey_form = QFormLayout()
@@ -49,6 +51,8 @@ class Workbench(QMainWindow):
         hotkey_form.addRow(self._hotkey_status)
         hotkey_form.addRow(self._hotkey_feedback)
         hotkey_form.addRow(apply_button)
+        self._layout.addWidget(capture_button)
+        self._layout.addSpacing(12)
         self._layout.addLayout(hotkey_form)
         self._layout.addStretch()
         self.setCentralWidget(content)
@@ -60,8 +64,7 @@ class Workbench(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def show_hotkey_settings(self) -> None:
-        self.activate()
+    def focus_hotkey_settings(self) -> None:
         self._shortcut.setFocus()
 
     def show_hotkey_state(self, state: HotkeyState) -> None:
