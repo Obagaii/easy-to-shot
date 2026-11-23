@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, QTimer, Qt, Slot
+from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence, QScreen
 from PySide6.QtWidgets import QApplication
 
 from e2s.capture.service import CaptureError, capture_frame
+from e2s.capture.session import CaptureSession, CaptureSource, OutputSnapshot
 from e2s.platform.windows.displays import DisplayWatcher, screen_at_cursor
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, GlobalHotkey
 from e2s.ui.native.overlay import CaptureOverlay
@@ -21,6 +22,8 @@ class WindowState:
 
 
 class AppController(QObject):
+    snapshot_ready = Signal(object)
+
     def __init__(self, app: QApplication, workbench: Workbench, tray: Tray) -> None:
         super().__init__()
         self._app = app
@@ -28,6 +31,7 @@ class AppController(QObject):
         self._tray = tray
         self._hotkey = GlobalHotkey(app, self.start_capture)
         self._capture_screen: QScreen | None = None
+        self._capture_source = CaptureSource.HOTKEY
         self._overlay: CaptureOverlay | None = None
         self._previous_window: WindowState | None = None
         self._activate_after_capture = False
@@ -40,10 +44,10 @@ class AppController(QObject):
         self._displays = DisplayWatcher(app, self)
         self._displays.changed.connect(self._on_displays_changed)
         tray.workbench_requested.connect(self.show_workbench)
-        tray.capture_requested.connect(self.start_capture)
+        tray.capture_requested.connect(lambda: self.start_capture(CaptureSource.TRAY))
         tray.settings_requested.connect(self._show_hotkey_settings)
         tray.quit_requested.connect(self.quit)
-        workbench.capture_requested.connect(lambda: self.start_capture(from_workbench=True))
+        workbench.capture_requested.connect(lambda: self.start_capture(CaptureSource.WORKBENCH))
         workbench.hotkey_requested.connect(self._replace_hotkey)
 
     def start(self) -> None:
@@ -65,6 +69,7 @@ class AppController(QObject):
             return
         self._is_closing = True
         self._finish_capture()
+        self._tray.dismiss_menu()
         self._tray.hide()
         self._workbench.close()
         self._hotkey.close()
@@ -75,7 +80,7 @@ class AppController(QObject):
         self._app.quit()
 
     @Slot()
-    def start_capture(self, *, from_workbench: bool = False) -> None:
+    def start_capture(self, source: CaptureSource = CaptureSource.HOTKEY) -> None:
         if self._is_closing:
             return
         if self._capture_screen is not None:
@@ -89,8 +94,9 @@ class AppController(QObject):
             self._tray.notify("未找到鼠标所在的屏幕，请重试。")
             return
         self._capture_screen = screen
+        self._capture_source = source
 
-        if from_workbench and self._workbench.isVisible():
+        if source == CaptureSource.WORKBENCH and self._workbench.isVisible():
             self._previous_window = WindowState(
                 self._workbench.windowState(), self._workbench.isActiveWindow()
             )
@@ -109,9 +115,15 @@ class AppController(QObject):
             self._tray.notify(str(error))
             return
 
-        self._overlay = CaptureOverlay(frame)
+        self._overlay = CaptureOverlay(CaptureSession(frame, self._capture_source))
         self._overlay.cancelled.connect(self._finish_capture)
+        self._overlay.snapshot_confirmed.connect(self._submit_snapshot)
         self._overlay.show_on_screen(self._capture_screen)
+
+    @Slot(object)
+    def _submit_snapshot(self, snapshot: OutputSnapshot) -> None:
+        self._finish_capture()
+        self.snapshot_ready.emit(snapshot)
 
     @Slot()
     def _on_displays_changed(self) -> None:

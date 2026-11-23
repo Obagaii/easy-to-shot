@@ -6,7 +6,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication
 
-from e2s.platform.windows.hotkeys import GlobalHotkey, HotkeyError, HotkeyState
+from e2s.platform.windows.hotkeys import GlobalHotkey, HotkeyError, HotkeyState, _decode
 
 
 @pytest.mark.parametrize(
@@ -27,6 +27,11 @@ def test_invalid_or_reserved_shortcut_is_rejected(
         assert hotkey.replace(QKeySequence(shortcut)) == HotkeyState(None, error)
     finally:
         hotkey.close()
+
+
+def test_printable_binding_maps_layout_shift_and_keypad_to_native_keys() -> None:
+    assert _decode(QKeySequence("Ctrl++"), lambda _: 0x01BB) == (0x0006, 0xBB)
+    assert _decode(QKeySequence("Ctrl+Num+9"), None) == (0x0002, 0x69)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Requires Win32 hotkey registration")
