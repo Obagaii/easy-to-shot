@@ -31,6 +31,31 @@ def drag(widget, start, end) -> None:
     QTest.mouseRelease(widget, Qt.MouseButton.LeftButton, pos=end)
 
 
+def test_drag_add_move_delete_and_undo_with_source_pixel_coordinates(canvas) -> None:
+    widget, document, scale = canvas
+    toolbar = widget._toolbar
+    QTest.mouseClick(toolbar._buttons[Tool.LINE], Qt.MouseButton.LeftButton)
+    drag(widget, QPoint(55, 80), QPoint(295, 80))
+    created = document.elements[0]
+    assert created.points[0] == pytest.approx((25 * scale, 30 * scale))
+    assert created.points[1] == pytest.approx((265 * scale, 30 * scale))
+    assert created.width_px == 4
+
+    QTest.mouseClick(toolbar._buttons[Tool.SELECT], Qt.MouseButton.LeftButton)
+    drag(widget, QPoint(75, 83), QPoint(85, 103))
+    assert document.revision == 2
+    assert document.elements[0].points[0] == pytest.approx((35 * scale, 50 * scale))
+    QTest.keyClick(widget, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert document.elements == (created,)
+    QTest.keyClick(
+        widget, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+    )
+    assert document.elements != (created,)
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(85, 100))
+    QTest.keyClick(widget, Qt.Key.Key_Delete)
+    assert not document.elements
+
+
 def test_select_element_resize_from_corner_and_delete_from_toolbar(canvas) -> None:
     widget, document, scale = canvas
     toolbar = widget._toolbar
@@ -68,3 +93,18 @@ def test_select_element_resize_from_corner_and_delete_from_toolbar(canvas) -> No
     assert not toolbar._delete.isEnabled()
     QTest.keyClick(widget, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert document.elements == (moved,)
+
+
+def test_arrow_resize_changes_only_the_dragged_endpoint(canvas) -> None:
+    widget, document, scale = canvas
+    QTest.mouseClick(widget._toolbar._buttons[Tool.ARROW], Qt.MouseButton.LeftButton)
+    drag(widget, QPoint(80, 95), QPoint(180, 95))
+    original = document.elements[0]
+    QTest.mouseClick(widget._toolbar._buttons[Tool.SELECT], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, pos=QPoint(130, 95))
+    drag(widget, QPoint(180, 95), QPoint(230, 160))
+
+    resized = document.elements[0]
+    assert resized.points[0] == original.points[0]
+    assert resized.points[1] == pytest.approx((200 * scale, 110 * scale))
+    assert resized.width_px == original.width_px

@@ -15,9 +15,13 @@ from e2s.ui.native.annotation_controls import ColorControl, SizeControl
 _TOOLS = {
     Tool.SELECT: "选择",
     Tool.RECTANGLE: "矩形",
+    Tool.ELLIPSE: "椭圆",
+    Tool.LINE: "直线",
+    Tool.ARROW: "箭头",
+    Tool.PEN: "画笔",
 }
 
-_FILL_TOOLS = (Tool.RECTANGLE,)
+_FILL_TOOLS = (Tool.RECTANGLE, Tool.ELLIPSE)
 
 
 class AnnotationToolbar(QFrame):
@@ -119,7 +123,7 @@ class AnnotationToolbar(QFrame):
 
     def set_tool(self, tool: Tool) -> None:
         self._buttons[tool].setChecked(True)
-        is_stroke = tool in (Tool.RECTANGLE,)
+        is_stroke = tool in (Tool.RECTANGLE, Tool.ELLIPSE, Tool.LINE, Tool.ARROW, Tool.PEN)
         self._color.setVisible(is_stroke)
         self._width.setVisible(is_stroke)
         self._fill.setVisible(tool in _FILL_TOOLS)
