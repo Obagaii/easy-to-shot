@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -35,6 +35,7 @@ class Gesture:
     index: int | None = None
     resize: ElementResize | None = None
     draft: Element | None = None
+    pen_points: list[Point] = field(default_factory=list)
 
 
 class AnnotationCanvas(QWidget):
@@ -247,10 +248,16 @@ class AnnotationCanvas(QWidget):
         elif gesture.index is not None:
             element = self._document.elements[gesture.index]
             gesture.draft = element.translated(dx, dy) if dx or dy else None
-        elif self._tool is Tool.RECTANGLE:
+        elif self._tool is Tool.PEN:
+            if not gesture.pen_points or gesture.pen_points[-1] != point:
+                gesture.pen_points.append(point)
+            gesture.draft = self._make_stroke(tuple(gesture.pen_points))
+        elif self._tool in (Tool.RECTANGLE, Tool.ELLIPSE):
             gesture.draft = (
                 self._make_stroke((gesture.start, point)) if abs(dx) >= 1 and abs(dy) >= 1 else None
             )
+        else:
+            gesture.draft = self._make_stroke((gesture.start, point)) if dx or dy else None
 
     def _make_stroke(self, points: tuple[Point, ...]) -> Stroke:
         return Stroke(

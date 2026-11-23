@@ -1,9 +1,10 @@
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QColor, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from e2s.annotation.elements import Tool
 from e2s.app import capture_output
 from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
@@ -217,3 +218,53 @@ def test_toolbar_restores_at_new_position_after_dragging_the_selection(desktop) 
     assert moved.top > original.top
     assert moved.width_px == original.width_px
     assert moved.height_px == original.height_px
+
+
+def test_resizing_with_a_drawing_tool_keeps_marks_at_the_same_screen_pixels(desktop) -> None:
+    controller, _, tray, _ = desktop
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    window = overlay.windowHandle()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(150, 110))
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(520, 355))
+    canvas = overlay._canvas
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.LINE], Qt.MouseButton.LeftButton)
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(220, 170))
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(355, 170))
+    assert len(canvas._document.elements) == 1
+    element = canvas._document.elements[0]
+    old = overlay._session.selection
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(150, 232))
+    assert canvas._toolbar.isHidden()
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(185, 232))
+    assert canvas._toolbar.isVisible()
+    resized = overlay._session.selection
+    assert resized.left > old.left
+    assert resized.right == old.right
+    assert (resized.top, resized.bottom) == (old.top, old.bottom)
+    assert canvas._document.elements == (element,)
+    snapshot = overlay._session.create_snapshot()
+    x = round(element.points[0][0] + 20 - resized.left)
+    y = round(element.points[0][1] - resized.top)
+    assert snapshot.to_image().pixelColor(x, y) == QColor(element.color)
+    assert canvas._preview_image() == snapshot.to_image()
+
+    QTest.keyClick(canvas, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert not canvas._document.elements
+    assert overlay._session.selection == resized
+    QTest.keyClick(
+        canvas, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+    )
+    assert canvas._document.elements == (element,)
+
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.SELECT], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=QPoint(280, 170))
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(355, 170))
+    assert canvas._toolbar.isVisible()
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(405, 215))
+    resized_line = canvas._document.elements[0]
+    assert resized_line.points[0] == element.points[0]
+    assert resized_line.points[-1][0] > element.points[-1][0]
+    assert resized_line.points[-1][1] > element.points[-1][1]
+    assert overlay._session.selection == resized

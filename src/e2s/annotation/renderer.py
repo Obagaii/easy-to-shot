@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from math import hypot
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
@@ -9,7 +10,7 @@ from PySide6.QtGui import (
     QPen,
 )
 
-from e2s.annotation.elements import Element, Point, Stroke
+from e2s.annotation.elements import Element, Point, Stroke, Tool
 
 
 def render_annotations(
@@ -78,5 +79,33 @@ def _stroke_path(stroke: Stroke) -> tuple[QPainterPath, bool]:
     start = QPointF(*stroke.points[0])
     end = QPointF(*stroke.points[-1])
     path = QPainterPath()
-    path.addRect(QRectF(start, end).normalized())
-    return path, stroke.is_filled
+    if stroke.tool in (Tool.RECTANGLE, Tool.ELLIPSE):
+        rect = QRectF(start, end).normalized()
+        if stroke.tool is Tool.RECTANGLE:
+            path.addRect(rect)
+        else:
+            path.addEllipse(rect)
+        return path, stroke.is_filled
+    if stroke.tool is Tool.PEN:
+        if len(stroke.points) == 1:
+            radius = stroke.width_px / 2
+            path.addEllipse(start, radius, radius)
+            return path, True
+        path.moveTo(start)
+        for point in stroke.points[1:]:
+            path.lineTo(QPointF(*point))
+        return path, False
+    path.moveTo(start)
+    path.lineTo(end)
+    if stroke.tool is Tool.ARROW:
+        delta = end - start
+        length_px = hypot(delta.x(), delta.y())
+        if length_px:
+            direction = delta / length_px
+            head_length_px = min(length_px * 0.45, max(8, stroke.width_px * 3))
+            wing = QPointF(-direction.y(), direction.x()) * (head_length_px * 0.5)
+            base = end - direction * head_length_px
+            path.moveTo(base + wing)
+            path.lineTo(end)
+            path.lineTo(base - wing)
+    return path, False
