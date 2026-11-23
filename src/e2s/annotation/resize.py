@@ -9,6 +9,7 @@ from e2s.annotation.elements import (
     MAX_STROKE_WIDTH_PX,
     MIN_FONT_SIZE_PX,
     Element,
+    Mosaic,
     Point,
     Stroke,
     Text,
@@ -25,7 +26,7 @@ class Endpoint(Enum):
 def resize_bounds(element: Element) -> QRectF:
     if isinstance(element, Text) or (isinstance(element, Stroke) and len(element.points) == 1):
         return element_bounds(element)
-    points = element.points
+    points = (element.start, element.end) if isinstance(element, Mosaic) else element.points
     xs, ys = zip(*points)
     rect = QRectF(QPointF(min(xs), min(ys)), QPointF(max(xs), max(ys)))
     if rect.width() == 0:
@@ -82,6 +83,8 @@ class ElementResize:
                 top + (point[1] - origin_y) * new_height / height,
             )
 
+        if isinstance(element, Mosaic):
+            return replace(element, start=map_point(element.start), end=map_point(element.end))
         return replace(element, points=tuple(map_point(point) for point in element.points))
 
     def _move_endpoint(self, dx_px: float, dy_px: float) -> Element:

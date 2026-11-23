@@ -1,6 +1,8 @@
 from collections.abc import Iterable
-from math import hypot
-from PySide6.QtCore import QPointF, QRectF, Qt
+from math import ceil, floor, hypot
+
+from PIL import Image
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -12,7 +14,7 @@ from PySide6.QtGui import (
     QPen,
 )
 
-from e2s.annotation.elements import Element, Point, Stroke, Text, Tool
+from e2s.annotation.elements import Element, Mosaic, Point, Stroke, Text, Tool
 
 
 def render_annotations(
@@ -26,6 +28,11 @@ def render_annotations(
         for element in elements:
             if image.isNull():
                 break
+            if isinstance(element, Mosaic):
+                if painter.isActive():
+                    painter.end()
+                _apply_mosaic(image, element, origin_px)
+                continue
             if not painter.isActive():
                 if not painter.begin(image):
                     raise MemoryError("Unable to allocate the annotation image")
@@ -68,6 +75,8 @@ def hit_test(elements: tuple[Element, ...], point: Point, tolerance_px: float) -
 
 
 def element_bounds(element: Element) -> QRectF:
+    if isinstance(element, Mosaic):
+        return QRectF(_mosaic_rect(element))
     if isinstance(element, Text):
         return _text_bounds(element)
     path, is_filled = _stroke_path(element)
@@ -153,3 +162,52 @@ def _stroke_path(stroke: Stroke) -> tuple[QPainterPath, bool]:
             path.lineTo(end)
             path.lineTo(base - wing)
     return path, False
+
+
+def _mosaic_rect(element: Mosaic) -> QRect:
+    left, right = sorted((element.start[0], element.end[0]))
+    top, bottom = sorted((element.start[1], element.end[1]))
+    return QRect(floor(left), floor(top), ceil(right) - floor(left), ceil(bottom) - floor(top))
+
+
+def _block_runs(start: int, end: int, origin: int, block: int) -> list[tuple[int, int, int]]:
+    """Split one clipped axis into partial edges and a run of whole mosaic blocks."""
+    runs = []
+    aligned_start = min(end, start + (origin - start) % block)
+    if aligned_start > start:
+        runs.append((start, aligned_start, 1))
+    aligned_end = aligned_start + (end - aligned_start) // block * block
+    if aligned_end > aligned_start:
+        runs.append((aligned_start, aligned_end, (aligned_end - aligned_start) // block))
+    if end > aligned_end:
+        runs.append((aligned_end, end, 1))
+    return runs
+
+
+def _apply_mosaic(image: QImage, element: Mosaic, origin_px: tuple[int, int]) -> None:
+    left_px, top_px = origin_px
+    bounds = _mosaic_rect(element).translated(-left_px, -top_px)
+    rect = bounds.intersected(image.rect())
+    if rect.isEmpty():
+        return
+    crop = image.copy(rect)
+    if crop.isNull():
+        raise MemoryError("Unable to allocate the mosaic region")
+    width, height = rect.width(), rect.height()
+    pixels = Image.frombytes("RGBA", (width, height), crop.constBits())
+    # Each box filter covers complete blocks or the visible part of a clipped edge block.
+    columns = _block_runs(0, width, bounds.x() - rect.x(), element.block_size_px)
+    rows = _block_runs(0, height, bounds.y() - rect.y(), element.block_size_px)
+    for x1, x2, columns_count in columns:
+        for y1, y2, rows_count in rows:
+            blocks = pixels.resize(
+                (columns_count, rows_count), Image.Resampling.BOX, (x1, y1, x2, y2)
+            )
+            pixels.paste(
+                blocks.resize((x2 - x1, y2 - y1), Image.Resampling.NEAREST), (x1, y1)
+            )
+    payload = pixels.tobytes()
+    mosaic = QImage(payload, width, height, width * 4, QImage.Format.Format_RGBA8888)
+    with QPainter(image) as painter:
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.drawImage(rect.topLeft(), mosaic)

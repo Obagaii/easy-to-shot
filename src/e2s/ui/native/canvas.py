@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from e2s.annotation.document import AnnotationDocument
-from e2s.annotation.elements import Element, Point, Stroke, Text, Tool
+from e2s.annotation.elements import Element, Mosaic, Point, Stroke, Text, Tool
 from e2s.annotation.renderer import annotation_font, element_bounds, hit_test, render_annotations
 from e2s.annotation.resize import ElementResize, Endpoint, resize_bounds
 from e2s.capture.geometry import ResizeHandle
@@ -285,6 +285,11 @@ class AnnotationCanvas(QWidget):
         elif gesture.index is not None:
             element = self._document.elements[gesture.index]
             gesture.draft = element.translated(dx, dy) if dx or dy else None
+        elif self._tool is Tool.MOSAIC:
+            if abs(dx) >= 1 and abs(dy) >= 1:
+                gesture.draft = Mosaic(gesture.start, point, self._toolbar.block_size_px)
+            else:
+                gesture.draft = None
         elif self._tool is Tool.PEN:
             if not gesture.pen_points or gesture.pen_points[-1] != point:
                 gesture.pen_points.append(point)
