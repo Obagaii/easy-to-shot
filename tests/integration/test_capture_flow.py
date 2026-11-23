@@ -4,6 +4,7 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from e2s.app import capture_output
 from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
 from e2s.ui.native.tray import Tray, create_app_icon
@@ -82,23 +83,28 @@ def test_display_change_cancels_capture_started_from_tray(desktop) -> None:
     assert not results
 
 
-def test_confirm_submits_frozen_pixels_and_restores_workbench(desktop) -> None:
+def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch) -> None:
     controller, workbench, _, _ = desktop
+    copied = []
+    monkeypatch.setattr(capture_output, "copy_image_to_clipboard", copied.append)
     results = []
     controller.snapshot_ready.connect(lambda snapshot: results.append(snapshot))
     workbench.showMaximized()
     workbench.capture_requested.emit()
     overlay = wait_for_overlay(controller)
-    QTest.keyClick(overlay, Qt.Key.Key_Return)
+    assert overlay._canvas is None
     assert not results
     assert overlay.isVisible()
 
     QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(200, 180))
     QTest.mouseMove(overlay, QPoint(40, 30))
     QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(40, 30))
-    QTest.keyClick(overlay, Qt.Key.Key_Right)
+    canvas = overlay._canvas
+    assert canvas._toolbar.isVisible()
+    assert not results
+    QTest.keyClick(canvas, Qt.Key.Key_Right)
     frame = overlay._frame.image
-    QTest.keyClick(overlay, Qt.Key.Key_Return)
+    QTest.keyClick(canvas, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
 
     assert len(results) == 1
     snapshot = results[0]
@@ -109,6 +115,7 @@ def test_confirm_submits_frozen_pixels_and_restores_workbench(desktop) -> None:
         selection.left, selection.top, selection.width_px, selection.height_px
     ).convertToFormat(snapshot.to_image().format())
     assert snapshot.to_image() == expected
+    assert copied == [expected]
     assert controller._overlay is None
     assert workbench.isVisible()
     assert workbench.isMaximized()
@@ -167,12 +174,46 @@ def test_side_handle_resizes_only_its_edge(desktop, position, edge, cursor_shape
         Qt.MouseButton.NoButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    QApplication.sendEvent(overlay, mouse_move)
-    assert overlay.cursor().shape() == cursor_shape
-    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=position)
-    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=position + QPoint(23, 31))
+    canvas = overlay._canvas
+    QApplication.sendEvent(canvas, mouse_move)
+    assert canvas.cursor().shape() == cursor_shape
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=position)
+    assert canvas._toolbar.isHidden()
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=position + QPoint(23, 31))
+    assert canvas._toolbar.isVisible()
     resized = overlay._session.selection
 
     assert getattr(resized, edge) > getattr(initial, edge)
     for fixed_edge in {"left", "top", "right", "bottom"} - {edge}:
         assert getattr(resized, fixed_edge) == getattr(initial, fixed_edge)
+
+
+def test_toolbar_restores_at_new_position_after_dragging_the_selection(desktop) -> None:
+    controller, _, tray, _ = desktop
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    window = overlay.windowHandle()
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(130, 230))
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(650, 395))
+    canvas = overlay._canvas
+    toolbar = canvas._toolbar
+    assert toolbar.isVisible()
+    old_position = toolbar.pos()
+    original = overlay._session.selection
+
+    start = QPoint(375, 295)
+    end = start + QPoint(25, 40)
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=start)
+    assert toolbar.isHidden()
+    QTest.mouseMove(window, end)
+    assert toolbar.isHidden()
+    assert overlay._preview_selection != original
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=end)
+
+    assert toolbar.isVisible()
+    assert toolbar.pos() != old_position
+    moved = overlay._session.selection
+    assert moved.left > original.left
+    assert moved.top > original.top
+    assert moved.width_px == original.width_px
+    assert moved.height_px == original.height_px

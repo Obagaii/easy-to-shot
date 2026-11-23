@@ -1,18 +1,29 @@
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QStandardPaths, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence, QScreen
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from e2s.app.capture_output import copy_snapshot, save_snapshot
 from e2s.capture.service import CaptureError, capture_frame
 from e2s.capture.session import CaptureSession, CaptureSource, OutputSnapshot
+from e2s.output.files import SaveResult, build_filename
+from e2s.output.ports import TaskState
 from e2s.platform.windows.displays import DisplayWatcher, screen_at_cursor
+from e2s.platform.windows.file_dialogs import choose_image_save_path
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, GlobalHotkey
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.tray import Tray
 from e2s.ui.native.workbench import Workbench
 
 _CAPTURE_SETTLE_MS = 100
+_SAVE_ERRORS = {
+    "overwrite_not_confirmed": "目标文件已存在，请重新选择文件或确认覆盖。",
+    "directory_not_writable": "无法写入所选目录，请选择其他目录。",
+    "encode_failed": "无法生成 PNG，请重试。",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +34,7 @@ class WindowState:
 
 class AppController(QObject):
     snapshot_ready = Signal(object)
+    _save_finished = Signal(object)
 
     def __init__(self, app: QApplication, workbench: Workbench, tray: Tray) -> None:
         super().__init__()
@@ -36,6 +48,9 @@ class AppController(QObject):
         self._previous_window: WindowState | None = None
         self._activate_after_capture = False
         self._is_closing = False
+        self._pending_save: tuple[OutputSnapshot, CaptureOverlay] | None = None
+        self._save_pool = QThreadPool(self)
+        self._save_finished.connect(self._on_save_finished, Qt.ConnectionType.QueuedConnection)
 
         self._capture_timer = QTimer(self)
         self._capture_timer.setSingleShot(True)
@@ -73,6 +88,7 @@ class AppController(QObject):
         self._tray.hide()
         self._workbench.close()
         self._hotkey.close()
+        self._save_pool.waitForDone()
 
     @Slot()
     def quit(self) -> None:
@@ -117,13 +133,89 @@ class AppController(QObject):
 
         self._overlay = CaptureOverlay(CaptureSession(frame, self._capture_source))
         self._overlay.cancelled.connect(self._finish_capture)
-        self._overlay.snapshot_confirmed.connect(self._submit_snapshot)
+        self._overlay.copy_requested.connect(self._copy_snapshot)
+        self._overlay.save_requested.connect(self._save_snapshot)
         self._overlay.show_on_screen(self._capture_screen)
 
     @Slot(object)
-    def _submit_snapshot(self, snapshot: OutputSnapshot) -> None:
+    def _copy_snapshot(self, snapshot: OutputSnapshot) -> None:
+        overlay = self._overlay
+        if overlay is None:
+            return
+        result = copy_snapshot(snapshot)
+        if result.state is not TaskState.SUCCEEDED:
+            overlay.set_output_feedback("无法复制截图，请重试。")
+            return
         self._finish_capture()
         self.snapshot_ready.emit(snapshot)
+
+    @Slot(object)
+    def _save_snapshot(self, snapshot: OutputSnapshot) -> None:
+        overlay = self._overlay
+        if overlay is None:
+            return
+        if self._pending_save is not None:
+            overlay.set_output_feedback("正在保存上一张截图，请稍后重试。")
+            return
+
+        pictures = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        default_directory = Path(pictures) if pictures else Path.home()
+        output_directory = default_directory / "EasyToShot"
+        if not output_directory.is_dir():
+            output_directory = default_directory
+        suggested = output_directory / build_filename(datetime.now())
+        overlay.set_output_feedback("", is_pending=True)
+        target = choose_image_save_path(overlay, suggested, confirm_overwrite=False)
+        if self._overlay is not overlay:
+            return
+        if target is None:
+            overlay.set_output_feedback("")
+            return
+        if target.suffix.lower() != ".png":
+            target = target.with_name(f"{target.name}.png")
+        is_overwrite_confirmed = False
+        if target.exists():
+            answer = QMessageBox.question(
+                overlay, "覆盖截图", f"已存在同名文件，是否覆盖？\n{target}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if self._overlay is not overlay:
+                return
+            if answer != QMessageBox.StandardButton.Yes:
+                overlay.set_output_feedback("")
+                return
+            is_overwrite_confirmed = True
+        self._pending_save = (snapshot, overlay)
+        overlay.set_output_feedback("正在保存截图…", is_pending=True)
+        self._save_pool.start(lambda: self._write_snapshot(snapshot, target, is_overwrite_confirmed))
+
+    def _write_snapshot(
+        self, snapshot: OutputSnapshot, target: Path, is_overwrite_confirmed: bool
+    ) -> None:
+        try:
+            result = save_snapshot(snapshot, target, is_overwrite_confirmed=is_overwrite_confirmed)
+        except MemoryError:
+            result = SaveResult(
+                str(snapshot.operation_id), TaskState.FAILED, error_code="encode_failed"
+            )
+        self._save_finished.emit(result)
+
+    @Slot(object)
+    def _on_save_finished(self, result: SaveResult) -> None:
+        if self._pending_save is None:
+            return
+        (snapshot, overlay), self._pending_save = self._pending_save, None
+        if result.state is TaskState.SUCCEEDED:
+            if self._overlay is overlay:
+                self._finish_capture()
+            self.snapshot_ready.emit(snapshot)
+        else:
+            message = _SAVE_ERRORS.get(result.error_code, "无法保存截图，请重试。")
+            if self._overlay is overlay:
+                overlay.set_output_feedback(message)
+            elif not self._is_closing:
+                self._tray.notify(message)
 
     @Slot()
     def _on_displays_changed(self) -> None:

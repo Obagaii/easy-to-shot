@@ -4,6 +4,8 @@ from uuid import UUID, uuid4
 
 from PySide6.QtGui import QImage
 
+from e2s.annotation.document import AnnotationDocument
+from e2s.annotation.renderer import render_annotations
 from e2s.capture.geometry import SelectionRect
 from e2s.capture.service import CaptureError, CaptureFrame
 
@@ -52,6 +54,7 @@ class CaptureSession:
         self._session_id = uuid4()
         self._revision = 0
         self._selection: SelectionRect | None = None
+        self._annotation: AnnotationDocument | None = None
 
     @property
     def selection(self) -> SelectionRect | None:
@@ -60,27 +63,52 @@ class CaptureSession:
     def set_selection(self, selection: SelectionRect | None) -> None:
         if selection is not None and not selection.fits(self.frame.width_px, self.frame.height_px):
             raise ValueError("Selection must fit inside the captured pixels")
-        if self._selection != selection:
-            self._selection = selection
-            self._revision += 1
+        if self._selection == selection:
+            return
+        if self._annotation is not None:
+            if selection is None:
+                self._revision += self._annotation.revision
+                self._annotation = None
+            else:
+                self._annotation.set_source(
+                    self._copy_selection(selection), (selection.left, selection.top)
+                )
+        self._selection = selection
+        self._revision += 1
+
+    def begin_annotation(self) -> AnnotationDocument:
+        selection = self._selection
+        if selection is None:
+            raise CaptureError("请先框选有效的截图区域。")
+        if self._annotation is None:
+            self._annotation = AnnotationDocument(
+                self._copy_selection(selection), (selection.left, selection.top)
+            )
+        return self._annotation
 
     def create_snapshot(self) -> OutputSnapshot:
         selection = self._selection
         if selection is None:
             raise CaptureError("请先框选有效的截图区域。")
-        crop = self.frame.image.copy(
-            selection.left, selection.top, selection.width_px, selection.height_px
-        )
-        image = crop.convertToFormat(QImage.Format.Format_RGBA8888)
+        document = self.begin_annotation()
+        image = render_annotations(document.source, document.elements, document.origin_px)
         # RGBA8888 uses exactly four bytes per pixel with no row padding.
         if image.isNull():
             raise CaptureError("无法生成截图，请缩小选区后重试。")
         return OutputSnapshot(
             uuid4(),
             self._session_id,
-            self._revision,
+            self._revision + document.revision,
             self._source,
             self.frame.screen_id,
             selection,
             bytes(image.constBits()),
         )
+
+    def _copy_selection(self, selection: SelectionRect) -> QImage:
+        crop = self.frame.image.copy(
+            selection.left, selection.top, selection.width_px, selection.height_px
+        )
+        if crop.isNull():
+            raise CaptureError("无法生成截图，请缩小选区后重试。")
+        return crop
