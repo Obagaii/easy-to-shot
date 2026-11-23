@@ -81,3 +81,78 @@ F4 / 超大图预算阶段实现，避免与「B1 首版仅实现 `queue_full`�
 - 真实 Qt GUI 线程剪贴板与 A4 实际快照（PR-03 的第 ③ 次联调提交）。
 - 两个外部桌面程序的粘贴尺寸验收（B1 完成条件，待 A4）。
 - 文件命名与保存（PR-04 B2）、Windows 真机混合 DPI 与系统对话框。
+
+## PR-04 提交 ① · `[B2] 实现 PNG 编码和无覆盖保存`
+
+分支 `feat/b2-save-image`；新增 `src/e2s/output/files.py`、`tests/unit/test_save_files.py`。
+契约草案见 `docs/issue-b2-contract.md`（本地文档，不入库）。
+
+### 阶段 2 测试
+
+| 命令 | 结果 |
+| --- | --- |
+| `python -m unittest discover -s tests/unit -v` | **22/22 通过**（既有 15 项 + ① 7 项） |
+| `python -m compileall -q src/e2s/output tests/unit` | 通过 |
+| 格式门禁（9 个 `.py`） | 0 不合格 |
+
+覆盖项：文件名格式与序号后缀、PNG 签名与 Pillow 读回尺寸/像素、快速保存落盘、
+同秒两次保存产生不同文件、已有文件字节不变、目录不存在返回 `directory_not_writable`、
+临时文件不残留。
+
+### 阶段 3 代码评估（8 项）
+
+| 项 | 结论 |
+| --- | --- |
+| 风格 | 通过：`snake_case` 模块与函数、`PascalCase` 数据类、常量大写、4 空格缩进、约 100 字符 |
+| 功能 | 通过：仅覆盖 ① 的 PNG 编码与无覆盖保存，未越界实现 ② 另存 |
+| 契约 | 通过：`E2S_yyyyMMdd_HHmmss.png`、`TaskState` 5 值、错误码稳定，与 B1 共用 `OutputSnapshot` |
+| 架构 | 通过：输出层内聚，不依赖 Qt 或窗口对象；临时文件与目标同目录 |
+| 健壮性 | 通过：目录不存在、编码失败、发布失败、序号耗尽四类分支均有稳定结果 |
+| 资源与隐私 | 通过：临时文件立即清理，样本为合成色块，无像素写入日志 |
+| 安全 | 通过：目标名由服务在输出目录内生成，不接受外部路径，无动态求值 |
+| 回归 | 通过：未改动 B1 的 `service.py` / `ports.py` / `mock.py`，仅新增文件 |
+
+**结论：通过**。非阻断观察项：`os.link` 在非 NTFS 或跨卷文件系统可能不可用
+（本环境已验证可用并会在失败时返回 `write_failed`）；pytest 未安装；
+A 的 `pyproject.toml` 未建立；另存、覆盖确认与错误恢复属提交 ②。
+
+## PR-04 提交 ② · `[B2] 接入另存、覆盖确认及错误恢复`
+
+`files.py` 新增 `save_as`、`_encode_payload`、`_publish_with_overwrite`；
+`quick_save` 增加取消分支与权限错误映射；新增 `test_save_recovery.py`。
+
+### 阶段 2 测试
+
+| 命令 | 结果 |
+| --- | --- |
+| `python -m unittest discover -s tests/unit -v` | **32/32 通过**（既有 22 项 + ② 10 项） |
+| `python -m compileall -q src/e2s/output tests/unit` | 通过 |
+| 格式门禁（10 个 `.py`） | 0 不合格 |
+
+覆盖项：新路径另存成功；目标已存在且未确认覆盖返回 `cancelled` / `overwrite_not_confirmed`
+且原文件字节不变；确认覆盖后内容更新为正确 PNG；取消不写任何文件；父目录不存在返回
+`directory_not_writable`；写入失败保留已有文件且不残留临时文件；快速保存取消不落盘；
+失败后按同一 `operation_id` 重试成功；取消优先于覆盖确认。
+
+### 阶段 3 代码评估（8 项）
+
+| 项 | 结论 |
+| --- | --- |
+| 风格 | 通过：新增方法 `snake_case`、布尔 `is_*` 前缀、私有成员单下划线、4 空格缩进 |
+| 功能 | 通过：覆盖 ② 的另存、覆盖确认与错误恢复，未越界实现 ③ 系统对话框 |
+| 契约 | 通过：错误码 `overwrite_not_confirmed` / `write_failed` / `directory_not_writable` / `encode_failed` 稳定，状态值不变 |
+| 架构 | 通过：`os.replace` 原子发布，临时文件与目标同目录，不依赖 Qt 或窗口对象 |
+| 健壮性 | 通过：取消优先级、写入失败不破坏已有文件、失败重试、临时文件清理均可复现 |
+| 资源与隐私 | 通过：临时文件在成功与失败路径都清理，样本为合成色块，无像素写入日志 |
+| 安全 | 通过（有观察项）：无动态求值；未确认覆盖或取消时不写入 |
+| 回归 | 通过：B1 与 PR-04 ① 的既有测试全部保持通过，未改动其产品代码 |
+
+**结论：通过**。非阻断观察项：另存目标路径未做输出目录白名单校验，
+依赖 A 的系统文件对话框返回可信路径（可在 D4 设置校验中补充约束）；
+`os.link` 跨卷可用性；pytest 未安装；A 的 `pyproject.toml` 未建立。
+
+### 仍未覆盖
+
+- 真实系统文件对话框、A4 实际快照与 GUI 线程适配（PR-04 的第 ③ 次联调提交）。
+- 默认输出目录 `EasyToShot` 的定位与可写性检查（`storage/paths.py`，后续 PR）。
+- Windows 真机的混合 DPI、用户另存路径权限与系统对话框取消行为。
