@@ -36,9 +36,11 @@ def main() -> int:
             return 1
         controller = AppController(app, workbench, tray)
         instance.activation_requested.connect(controller.show_workbench)
-        tray.show()
-        controller.show_workbench()
-        return app.exec()
+        controller.start()
+        try:
+            return app.exec()
+        finally:
+            controller.close()
     except (OSError, SingleInstanceError) as error:
         QMessageBox.critical(None, "Easy to Shot", str(error))
         return 1

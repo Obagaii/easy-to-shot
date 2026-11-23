@@ -39,6 +39,7 @@ class Tray(QSystemTrayIcon):
         self._menu = QMenu()
         self.setContextMenu(self._menu)
         self._menu.addAction("打开工作台", self.workbench_requested.emit)
+        self._menu.addAction("截图热键", self.settings_requested.emit)
         self._menu.addSeparator()
         self._menu.addAction("退出", self.quit_requested.emit)
         self.activated.connect(self._on_activated)

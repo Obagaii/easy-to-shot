@@ -27,8 +27,7 @@ def test_closing_workbench_leaves_tray_available(app: QApplication) -> None:
 
     tray.workbench_requested.emit()
     assert workbench.isVisible()
-    workbench.close()
-    tray.hide()
+    controller.close()
 
 
 def test_secondary_process_activates_primary(app: QApplication, tmp_path: Path) -> None:
