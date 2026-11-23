@@ -1,0 +1,1 @@
+"""Source-pixel screenshot annotations."""

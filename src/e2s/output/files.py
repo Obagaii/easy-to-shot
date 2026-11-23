@@ -124,7 +124,14 @@ class OutputFileService:
         if payload is None:
             return SaveResult(operation_id, TaskState.FAILED, error_code=error_code)
         try:
-            self._publish_with_overwrite(payload, target)
+            if is_overwrite_confirmed:
+                self._publish_with_overwrite(payload, target)
+            else:
+                self._publish_without_overwrite(payload, target)
+        except FileExistsError:
+            return SaveResult(
+                operation_id, TaskState.CANCELLED, error_code="overwrite_not_confirmed"
+            )
         except PermissionError:
             return SaveResult(
                 operation_id, TaskState.FAILED, error_code="directory_not_writable"

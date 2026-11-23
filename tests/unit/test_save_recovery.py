@@ -61,6 +61,21 @@ class SaveRecoveryTest(unittest.TestCase):
             self.assertEqual(image.tobytes(), self.snapshot.pixels)
         self.assertEqual(list(self.directory.glob("*.tmp")), [])
 
+    def test_save_as_does_not_replace_a_file_created_during_encoding(self) -> None:
+        target = self.directory / "concurrent.png"
+        encode = self.service._encode_payload
+
+        def encode_after_create(snapshot):
+            target.write_bytes(b"created by another operation")
+            return encode(snapshot)
+
+        with patch.object(self.service, "_encode_payload", side_effect=encode_after_create):
+            result = self.service.save_as(self.snapshot, target)
+
+        self.assertEqual(result.state, TaskState.CANCELLED)
+        self.assertEqual(result.error_code, "overwrite_not_confirmed")
+        self.assertEqual(target.read_bytes(), b"created by another operation")
+
     def test_save_as_cancelled_does_not_write(self) -> None:
         target = self.directory / "custom.png"
         result = self.service.save_as(self.snapshot, target, is_cancelled=True)
