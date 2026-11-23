@@ -1,5 +1,6 @@
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -138,3 +139,40 @@ def test_edge_handle_can_resize_and_move_a_selection_without_changing_its_size(d
     assert moved.left > resized.left
     assert moved.top > resized.top
     assert (moved.width_px, moved.height_px) == (resized.width_px, resized.height_px)
+
+
+@pytest.mark.parametrize(
+    ("position", "edge", "cursor_shape"),
+    [
+        (QPoint(260, 120), "top", Qt.CursorShape.SizeVerCursor),
+        (QPoint(360, 220), "right", Qt.CursorShape.SizeHorCursor),
+        (QPoint(260, 320), "bottom", Qt.CursorShape.SizeVerCursor),
+        (QPoint(160, 220), "left", Qt.CursorShape.SizeHorCursor),
+    ],
+)
+def test_side_handle_resizes_only_its_edge(desktop, position, edge, cursor_shape) -> None:
+    controller, _, tray, _ = desktop
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(160, 120))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(360, 320))
+    initial = overlay._session.selection
+
+    mouse_move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(position),
+        QPointF(overlay.mapToGlobal(position)),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(overlay, mouse_move)
+    assert overlay.cursor().shape() == cursor_shape
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=position)
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=position + QPoint(23, 31))
+    resized = overlay._session.selection
+
+    assert getattr(resized, edge) > getattr(initial, edge)
+    for fixed_edge in {"left", "top", "right", "bottom"} - {edge}:
+        assert getattr(resized, fixed_edge) == getattr(initial, fixed_edge)

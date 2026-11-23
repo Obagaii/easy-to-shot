@@ -53,11 +53,16 @@ class ScreenCoordinates:
         )
 
 
-class Corner(Enum):
-    TOP_LEFT = (True, True)
-    TOP_RIGHT = (False, True)
-    BOTTOM_LEFT = (True, False)
-    BOTTOM_RIGHT = (False, False)
+class ResizeHandle(Enum):
+    # Each component identifies the moving edge on that axis. Zero keeps the axis fixed.
+    TOP_LEFT = (-1, -1)
+    TOP = (0, -1)
+    TOP_RIGHT = (1, -1)
+    RIGHT = (1, 0)
+    BOTTOM_RIGHT = (1, 1)
+    BOTTOM = (0, 1)
+    BOTTOM_LEFT = (-1, 1)
+    LEFT = (-1, 0)
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -76,14 +81,16 @@ def move_selection(
 class SelectionDrag:
     origin: tuple[float, float]
     selection: SelectionRect | None = None
-    corner: Corner | None = None
+    resize_handle: ResizeHandle | None = None
 
     def update(
         self, position: tuple[float, float], width_px: int, height_px: int
     ) -> SelectionRect | None:
         x_px, y_px = position
         origin_x, origin_y = self.origin
-        if self.selection is None:
+        selection = self.selection
+        resize_handle = self.resize_handle
+        if selection is None:
             left, right = sorted(
                 (_clamp(origin_x, 0, width_px), _clamp(x_px, 0, width_px))
             )
@@ -92,30 +99,35 @@ class SelectionDrag:
             )
             if right - left < _MIN_SELECTION_PX or bottom - top < _MIN_SELECTION_PX:
                 return None
-        elif self.corner is None:
+        elif resize_handle is None:
             # Quantize the displacement as one unit so a move preserves the pixel size.
             return move_selection(
-                self.selection, round(x_px - origin_x), round(y_px - origin_y), width_px, height_px
+                selection, round(x_px - origin_x), round(y_px - origin_y), width_px, height_px
             )
         else:
-            left, top, right, bottom = self._resized_edges(
-                x_px - origin_x, y_px - origin_y, width_px, height_px
+            left, top, right, bottom = _resize_edges(
+                selection, resize_handle, x_px - origin_x, y_px - origin_y, width_px, height_px
             )
         return SelectionRect(floor(left), floor(top), ceil(right), ceil(bottom))
 
-    def _resized_edges(
-        self, dx_px: float, dy_px: float, width_px: int, height_px: int
-    ) -> tuple[float, float, float, float]:
-        selection = self.selection
-        moves_left, moves_top = self.corner.value
-        left, top = selection.left, selection.top
-        right, bottom = selection.right, selection.bottom
-        if moves_left:
-            left = _clamp(left + dx_px, 0, right - _MIN_SELECTION_PX)
-        else:
-            right = _clamp(right + dx_px, left + _MIN_SELECTION_PX, width_px)
-        if moves_top:
-            top = _clamp(top + dy_px, 0, bottom - _MIN_SELECTION_PX)
-        else:
-            bottom = _clamp(bottom + dy_px, top + _MIN_SELECTION_PX, height_px)
-        return left, top, right, bottom
+
+def _resize_edges(
+    selection: SelectionRect,
+    handle: ResizeHandle,
+    dx_px: float,
+    dy_px: float,
+    width_px: int,
+    height_px: int,
+) -> tuple[float, float, float, float]:
+    horizontal, vertical = handle.value
+    left, top = selection.left, selection.top
+    right, bottom = selection.right, selection.bottom
+    if horizontal < 0:
+        left = _clamp(left + dx_px, 0, right - _MIN_SELECTION_PX)
+    elif horizontal > 0:
+        right = _clamp(right + dx_px, left + _MIN_SELECTION_PX, width_px)
+    if vertical < 0:
+        top = _clamp(top + dy_px, 0, bottom - _MIN_SELECTION_PX)
+    elif vertical > 0:
+        bottom = _clamp(bottom + dy_px, top + _MIN_SELECTION_PX, height_px)
+    return left, top, right, bottom

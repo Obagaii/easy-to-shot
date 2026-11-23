@@ -13,7 +13,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from e2s.capture.geometry import (
-    Corner,
+    ResizeHandle,
     ScreenCoordinates,
     SelectionDrag,
     SelectionRect,
@@ -23,10 +23,14 @@ from e2s.capture.service import CaptureError
 from e2s.capture.session import CaptureSession
 
 _CURSORS = {
-    Corner.TOP_LEFT: Qt.CursorShape.SizeFDiagCursor,
-    Corner.TOP_RIGHT: Qt.CursorShape.SizeBDiagCursor,
-    Corner.BOTTOM_LEFT: Qt.CursorShape.SizeBDiagCursor,
-    Corner.BOTTOM_RIGHT: Qt.CursorShape.SizeFDiagCursor,
+    ResizeHandle.TOP_LEFT: Qt.CursorShape.SizeFDiagCursor,
+    ResizeHandle.TOP: Qt.CursorShape.SizeVerCursor,
+    ResizeHandle.TOP_RIGHT: Qt.CursorShape.SizeBDiagCursor,
+    ResizeHandle.RIGHT: Qt.CursorShape.SizeHorCursor,
+    ResizeHandle.BOTTOM_RIGHT: Qt.CursorShape.SizeFDiagCursor,
+    ResizeHandle.BOTTOM: Qt.CursorShape.SizeVerCursor,
+    ResizeHandle.BOTTOM_LEFT: Qt.CursorShape.SizeBDiagCursor,
+    ResizeHandle.LEFT: Qt.CursorShape.SizeHorCursor,
 }
 _ARROW_STEPS = {
     Qt.Key.Key_Left: (-1, 0),
@@ -90,7 +94,7 @@ class CaptureOverlay(QWidget):
         if selection is not None:
             painter.setPen(QPen(Qt.GlobalColor.white, 1))
             painter.drawRect(rect)
-            for _, point in self._corners(rect):
+            for _, point in self._resize_handles(rect):
                 painter.fillRect(QRectF(point.x() - 3, point.y() - 3, 6, 6), Qt.GlobalColor.white)
             dimensions = f"{selection.width_px} × {selection.height_px} px"
             bottom = rect.top() - 8 if rect.top() >= 40 else rect.bottom() + 32
@@ -100,7 +104,7 @@ class CaptureOverlay(QWidget):
             message = self._feedback or (
                 "拖动框选 · Esc 取消"
                 if selection is None
-                else "拖动选区或角点 · 方向键微调 · Enter 确认 · Esc 取消"
+                else "拖动选区或缩放手柄 · 方向键微调 · Enter 确认选区 · Esc 取消"
             )
             label_width = painter.fontMetrics().horizontalAdvance(message) + 20
             self._draw_label(painter, message, (self.width() - label_width) / 2, 36)
@@ -109,8 +113,8 @@ class CaptureOverlay(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         position = event.position()
-        selection, corner = self._hit_selection(position)
-        self._drag = SelectionDrag(self._source_position(position), selection, corner)
+        selection, handle = self._hit_selection(position)
+        self._drag = SelectionDrag(self._source_position(position), selection, handle)
         self._feedback = ""
         self._update_drag(position)
         event.accept()
@@ -181,9 +185,9 @@ class CaptureOverlay(QWidget):
         self.update()
 
     def _update_cursor(self, position: QPointF) -> None:
-        selection, corner = self._hit_selection(position)
-        if corner is not None:
-            self.setCursor(_CURSORS[corner])
+        selection, handle = self._hit_selection(position)
+        if handle is not None:
+            self.setCursor(_CURSORS[handle])
         elif selection is not None:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
         else:
@@ -197,25 +201,30 @@ class CaptureOverlay(QWidget):
         )
 
     @staticmethod
-    def _corners(rect: QRectF) -> tuple[tuple[Corner, QPointF], ...]:
+    def _resize_handles(rect: QRectF) -> tuple[tuple[ResizeHandle, QPointF], ...]:
+        center = rect.center()
         return (
-            (Corner.TOP_LEFT, rect.topLeft()),
-            (Corner.TOP_RIGHT, rect.topRight()),
-            (Corner.BOTTOM_LEFT, rect.bottomLeft()),
-            (Corner.BOTTOM_RIGHT, rect.bottomRight()),
+            (ResizeHandle.TOP_LEFT, rect.topLeft()),
+            (ResizeHandle.TOP, QPointF(center.x(), rect.top())),
+            (ResizeHandle.TOP_RIGHT, rect.topRight()),
+            (ResizeHandle.RIGHT, QPointF(rect.right(), center.y())),
+            (ResizeHandle.BOTTOM_RIGHT, rect.bottomRight()),
+            (ResizeHandle.BOTTOM, QPointF(center.x(), rect.bottom())),
+            (ResizeHandle.BOTTOM_LEFT, rect.bottomLeft()),
+            (ResizeHandle.LEFT, QPointF(rect.left(), center.y())),
         )
 
-    def _hit_selection(self, position: QPointF) -> tuple[SelectionRect | None, Corner | None]:
+    def _hit_selection(self, position: QPointF) -> tuple[SelectionRect | None, ResizeHandle | None]:
         selection = self._session.selection
         if selection is None:
             return None, None
         rect = self._selection_on_screen(selection)
 
-        def distance(handle: tuple[Corner, QPointF]) -> float:
+        def distance(handle: tuple[ResizeHandle, QPointF]) -> float:
             delta = handle[1] - position
             return delta.x() ** 2 + delta.y() ** 2
 
-        nearest = min(self._corners(rect), key=distance)
+        nearest = min(self._resize_handles(rect), key=distance)
         is_inside = rect.contains(position)
         hit_radius = _HANDLE_HIT_DIP
         if is_inside:

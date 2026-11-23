@@ -2,7 +2,7 @@ import pytest
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QImage
 
-from e2s.capture.geometry import Corner, ScreenCoordinates, SelectionDrag, SelectionRect
+from e2s.capture.geometry import ResizeHandle, ScreenCoordinates, SelectionDrag, SelectionRect
 from e2s.capture.service import CaptureFrame
 from e2s.capture.session import CaptureSession, CaptureSource
 
@@ -21,25 +21,43 @@ def test_selection_normalizes_four_drag_directions(origin, position) -> None:
 
 
 @pytest.mark.parametrize(
-    ("corner", "position", "expected"),
+    ("handle", "position", "expected"),
     [
-        (Corner.TOP_LEFT, (-20, -30), SelectionRect(0, 0, 80, 100)),
-        (Corner.TOP_RIGHT, (500, -30), SelectionRect(20, 0, 200, 100)),
-        (Corner.BOTTOM_LEFT, (-20, 300), SelectionRect(0, 30, 80, 160)),
-        (Corner.BOTTOM_RIGHT, (500, 300), SelectionRect(20, 30, 200, 160)),
+        (ResizeHandle.TOP_LEFT, (-20, -30), SelectionRect(0, 0, 80, 100)),
+        (ResizeHandle.TOP_RIGHT, (500, -30), SelectionRect(20, 0, 200, 100)),
+        (ResizeHandle.BOTTOM_LEFT, (-20, 300), SelectionRect(0, 30, 80, 160)),
+        (ResizeHandle.BOTTOM_RIGHT, (500, 300), SelectionRect(20, 30, 200, 160)),
     ],
 )
 def test_corner_resize_preserves_opposite_corner_and_clamps_to_screen(
-    corner, position, expected
+    handle, position, expected
 ) -> None:
     selection = SelectionRect(20, 30, 80, 100)
-    drag = SelectionDrag((0, 0), selection, corner)
+    drag = SelectionDrag((0, 0), selection, handle)
     assert drag.update(position, 200, 160) == expected
+
+
+@pytest.mark.parametrize(
+    ("handle", "position", "expected"),
+    [
+        (ResizeHandle.TOP, (50, -200), SelectionRect(20, 0, 80, 100)),
+        (ResizeHandle.TOP, (-50, 200), SelectionRect(20, 98, 80, 100)),
+        (ResizeHandle.RIGHT, (500, 50), SelectionRect(20, 30, 200, 100)),
+        (ResizeHandle.RIGHT, (-500, -50), SelectionRect(20, 30, 22, 100)),
+        (ResizeHandle.BOTTOM, (-50, 300), SelectionRect(20, 30, 80, 160)),
+        (ResizeHandle.BOTTOM, (50, -300), SelectionRect(20, 30, 80, 32)),
+        (ResizeHandle.LEFT, (-500, -50), SelectionRect(0, 30, 80, 100)),
+        (ResizeHandle.LEFT, (500, 50), SelectionRect(78, 30, 80, 100)),
+    ],
+)
+def test_side_resize_moves_only_its_edge_and_respects_limits(handle, position, expected) -> None:
+    selection = SelectionRect(20, 30, 80, 100)
+    assert SelectionDrag((0, 0), selection, handle).update(position, 200, 160) == expected
 
 
 def test_resize_cannot_cross_opposite_corner_and_tiny_drag_can_be_reselected() -> None:
     selection = SelectionRect(5, 5, 17, 17)
-    assert SelectionDrag((5, 5), selection, Corner.TOP_LEFT).update(
+    assert SelectionDrag((5, 5), selection, ResizeHandle.TOP_LEFT).update(
         (30, 30), 30, 30
     ) == SelectionRect(15, 15, 17, 17)
     drag = SelectionDrag((2.25, 2.25))
