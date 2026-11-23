@@ -1,3 +1,4 @@
 references/*
 docs/private/*
 AGENTS.md
+__pycache__/
