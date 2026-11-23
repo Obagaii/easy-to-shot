@@ -1,11 +1,11 @@
 import pytest
 from PySide6.QtCore import QPoint, QRectF, Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QInputMethodEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from e2s.annotation.document import AnnotationDocument
-from e2s.annotation.elements import Tool
+from e2s.annotation.elements import Text, Tool
 from e2s.ui.native.canvas import AnnotationCanvas
 
 
@@ -108,3 +108,51 @@ def test_arrow_resize_changes_only_the_dragged_endpoint(canvas) -> None:
     assert resized.points[0] == original.points[0]
     assert resized.points[1] == pytest.approx((200 * scale, 110 * scale))
     assert resized.width_px == original.width_px
+
+
+def test_ime_multiline_text_can_be_reedited_cancelled_and_undone(canvas) -> None:
+    widget, document, scale = canvas
+    QTest.mouseClick(widget._toolbar._buttons[Tool.TEXT], Qt.MouseButton.LeftButton)
+    position = QPoint(85, 85)
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton, pos=position)
+    editor = widget._editor
+    QApplication.sendEvent(editor, QInputMethodEvent("ni", []))
+    assert editor.has_preedit
+    QTest.keyClick(editor, Qt.Key.Key_Escape)
+    assert widget._editor is editor
+    QTest.keyClick(editor, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert widget._editor is editor
+    assert not document.elements
+
+    commit = QInputMethodEvent()
+    commit.setCommitString("你好")
+    QApplication.sendEvent(editor, commit)
+    QTest.keyClick(editor, Qt.Key.Key_Return)
+    commit.setCommitString("世界")
+    QApplication.sendEvent(editor, commit)
+    QTest.keyClick(editor, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert widget._editor is None
+    original = document.elements[0]
+    assert isinstance(original, Text)
+    assert original.origin == pytest.approx((55 * scale, 35 * scale))
+    assert original.value == "你好\n世界"
+    assert document.revision == 1
+
+    QTest.mouseDClick(widget, Qt.MouseButton.LeftButton, pos=position + QPoint(6, 8))
+    widget._editor.setPlainText("取消这次修改")
+    QTest.keyClick(widget._editor, Qt.Key.Key_Escape)
+    assert widget._editor is None
+    assert document.elements == (original,)
+    assert document.revision == 1
+
+    QTest.mouseDClick(widget, Qt.MouseButton.LeftButton, pos=position + QPoint(6, 8))
+    widget._editor.setPlainText("再次编辑")
+    widget._toolbar._font_size.set_value(38)
+    widget._toolbar._color.set_color("#1e88e5")
+    QTest.keyClick(widget._editor, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert document.revision == 2
+    assert document.elements[0].value == "再次编辑"
+    assert document.elements[0].font_size_px == 38
+    assert document.elements[0].color == "#1e88e5"
+    QTest.keyClick(widget, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert document.elements == (original,)

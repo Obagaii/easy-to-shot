@@ -2,7 +2,7 @@ import pytest
 from PySide6.QtGui import QColor, QImage
 
 from e2s.annotation.document import AnnotationDocument
-from e2s.annotation.elements import Stroke, Tool
+from e2s.annotation.elements import Stroke, Text, Tool
 from e2s.annotation.renderer import hit_test, render_annotations
 from e2s.annotation.resize import ElementResize, resize_bounds
 from e2s.capture.geometry import ResizeHandle
@@ -89,3 +89,28 @@ def test_lines_arrow_wings_and_freehand_use_source_pixel_width() -> None:
 def test_box_resize_keeps_the_opposite_corner_and_source_pixel_style(element, expected) -> None:
     gesture = ElementResize(element, ResizeHandle.BOTTOM_RIGHT, resize_bounds(element))
     assert gesture.update(20, 10) == expected
+
+
+def test_proportional_resize_enlarges_multiline_text_from_its_anchor(app) -> None:
+    element = Text((10, 20), "你好\n世界", "#123456", 24)
+    bounds = resize_bounds(element)
+    gesture = ElementResize(element, ResizeHandle.BOTTOM_RIGHT, bounds)
+    resized = gesture.update(bounds.width() / 2, bounds.height() / 2)
+    assert resized.font_size_px == 36
+    assert resized.value == element.value
+    assert resized.color == element.color
+    assert resized.origin[1] == pytest.approx(element.origin[1])
+
+
+def test_multiline_text_renders_in_each_line_and_restores_when_undone(app) -> None:
+    source = image_with_color(120, 100, "#ffffff")
+    document = AnnotationDocument(source)
+    text = Text((5, 5), "你好\n世界", "#123456", 20)
+    index = document.add(text)
+    rendered = render_annotations(source, document.elements)
+    assert rendered.copy(0, 5, 90, 22) != source.copy(0, 5, 90, 22)
+    assert rendered.copy(0, 28, 90, 23) != source.copy(0, 28, 90, 23)
+    document.replace(index, Text(text.origin, "新文字", text.color, 20))
+    assert render_annotations(source, document.elements) != rendered
+    document.undo()
+    assert render_annotations(source, document.elements) == rendered

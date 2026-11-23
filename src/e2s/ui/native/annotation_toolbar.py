@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from e2s.annotation.elements import MAX_STROKE_WIDTH_PX, Tool
+from e2s.annotation.elements import MAX_FONT_SIZE_PX, MAX_STROKE_WIDTH_PX, MIN_FONT_SIZE_PX, Tool
 from e2s.ui.native.annotation_controls import ColorControl, SizeControl
 
 _TOOLS = {
@@ -19,6 +19,7 @@ _TOOLS = {
     Tool.LINE: "直线",
     Tool.ARROW: "箭头",
     Tool.PEN: "画笔",
+    Tool.TEXT: "文字",
 }
 
 _FILL_TOOLS = (Tool.RECTANGLE, Tool.ELLIPSE)
@@ -26,11 +27,14 @@ _FILL_TOOLS = (Tool.RECTANGLE, Tool.ELLIPSE)
 
 class AnnotationToolbar(QFrame):
     tool_changed = Signal(object)
+    text_style_changed = Signal()
     undo_requested = Signal()
     redo_requested = Signal()
     delete_requested = Signal()
     copy_requested = Signal()
     save_requested = Signal()
+    text_accepted = Signal()
+    text_cancelled = Signal()
 
     def __init__(self, parent) -> None:
         super().__init__(parent)
@@ -96,17 +100,24 @@ class AnnotationToolbar(QFrame):
         self._delete.setEnabled(False)
 
         self._color = ColorControl(self)
+        self._color.color_changed.connect(self.text_style_changed)
         options.addWidget(self._color)
 
         self._width = SizeControl("笔宽", 1, MAX_STROKE_WIDTH_PX, 4, self)
-        options.addWidget(self._width)
+        self._font_size = SizeControl("字号", MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX, 24, self)
+        self._font_size.value_changed.connect(self.text_style_changed)
+        for field in (self._width, self._font_size):
+            options.addWidget(field)
         self._fill = QCheckBox("填充", self)
         options.addWidget(self._fill)
         options.addStretch(1)
+        self._text_accept = self._add_button(options, "完成文字", self.text_accepted, "Ctrl+Enter")
+        self._text_cancel = self._add_button(options, "取消文字", self.text_cancelled, "Esc")
         self._copy = self._add_button(options, "复制", self.copy_requested, "Ctrl+C")
         self._copy.setObjectName("copyAnnotation")
         self._save = self._add_button(options, "另存", self.save_requested, "Ctrl+S")
         self.set_tool(Tool.SELECT)
+        self.set_text_editing(False)
         self.set_history(False, False)
 
     @property
@@ -118,15 +129,32 @@ class AnnotationToolbar(QFrame):
         return self._width.value
 
     @property
+    def font_size_px(self) -> int:
+        return self._font_size.value
+
+    @property
     def is_filled(self) -> bool:
         return self._fill.isChecked()
 
     def set_tool(self, tool: Tool) -> None:
         self._buttons[tool].setChecked(True)
         is_stroke = tool in (Tool.RECTANGLE, Tool.ELLIPSE, Tool.LINE, Tool.ARROW, Tool.PEN)
-        self._color.setVisible(is_stroke)
+        self._color.setVisible(is_stroke or tool is Tool.TEXT)
         self._width.setVisible(is_stroke)
+        self._font_size.setVisible(tool is Tool.TEXT)
         self._fill.setVisible(tool in _FILL_TOOLS)
+
+    def set_text_style(self, color: str, font_size_px: int) -> None:
+        self._color.set_color(color)
+        self._font_size.set_value(font_size_px)
+
+    def set_text_editing(self, is_editing: bool) -> None:
+        for button in self._buttons.values():
+            button.setEnabled(not is_editing)
+        self._text_accept.setVisible(is_editing)
+        self._text_cancel.setVisible(is_editing)
+        self._copy.setEnabled(not is_editing)
+        self._save.setEnabled(not is_editing)
 
     def set_element_selected(self, is_selected: bool) -> None:
         self._delete.setEnabled(is_selected)
