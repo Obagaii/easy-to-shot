@@ -20,6 +20,7 @@ _TOOLS = {
     Tool.ARROW: "箭头",
     Tool.PEN: "画笔",
     Tool.TEXT: "文字",
+    Tool.MOSAIC: "马赛克",
 }
 
 _FILL_TOOLS = (Tool.RECTANGLE, Tool.ELLIPSE)
@@ -106,7 +107,8 @@ class AnnotationToolbar(QFrame):
         self._width = SizeControl("笔宽", 1, MAX_STROKE_WIDTH_PX, 4, self)
         self._font_size = SizeControl("字号", MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX, 24, self)
         self._font_size.value_changed.connect(self.text_style_changed)
-        for field in (self._width, self._font_size):
+        self._block_size = SizeControl("块大小", 2, 96, 12, self)
+        for field in (self._width, self._font_size, self._block_size):
             options.addWidget(field)
         self._fill = QCheckBox("填充", self)
         options.addWidget(self._fill)
@@ -133,6 +135,10 @@ class AnnotationToolbar(QFrame):
         return self._font_size.value
 
     @property
+    def block_size_px(self) -> int:
+        return self._block_size.value
+
+    @property
     def is_filled(self) -> bool:
         return self._fill.isChecked()
 
@@ -142,6 +148,7 @@ class AnnotationToolbar(QFrame):
         self._color.setVisible(is_stroke or tool is Tool.TEXT)
         self._width.setVisible(is_stroke)
         self._font_size.setVisible(tool is Tool.TEXT)
+        self._block_size.setVisible(tool is Tool.MOSAIC)
         self._fill.setVisible(tool in _FILL_TOOLS)
 
     def set_text_style(self, color: str, font_size_px: int) -> None:

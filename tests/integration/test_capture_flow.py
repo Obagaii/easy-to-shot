@@ -1,6 +1,9 @@
+from time import sleep
+
 import pytest
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QColor, QMouseEvent
+from PIL import Image
+from PySide6.QtGui import QColor, QImage, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -8,6 +11,8 @@ from e2s.annotation.elements import Tool
 from e2s.app import capture_output
 from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
+from e2s.capture.service import CaptureFrame
+from e2s.platform.windows.clipboard import ClipboardError
 from e2s.ui.native.tray import Tray, create_app_icon
 from e2s.ui.native.workbench import Workbench
 
@@ -268,3 +273,69 @@ def test_resizing_with_a_drawing_tool_keeps_marks_at_the_same_screen_pixels(desk
     assert resized_line.points[-1][0] > element.points[-1][0]
     assert resized_line.points[-1][1] > element.points[-1][1]
     assert overlay._session.selection == resized
+
+
+def test_annotated_preview_copy_and_saved_png_match_after_output_retries(
+    desktop, monkeypatch, tmp_path
+) -> None:
+    controller, workbench, _, _ = desktop
+
+    def synthetic_frame(screen):
+        geometry = screen.geometry()
+        image = QImage(geometry.size() * screen.devicePixelRatio(), QImage.Format.Format_RGBA8888)
+        image.fill(QColor("#ffffff"))
+        return CaptureFrame("test", geometry, image)
+
+    monkeypatch.setattr(controller_module, "capture_frame", synthetic_frame)
+    attempted_copies = []
+
+    def reject_clipboard(image):
+        attempted_copies.append(bytes(image.constBits()))
+        raise ClipboardError("clipboard is temporarily unavailable")
+
+    monkeypatch.setattr(capture_output, "copy_image_to_clipboard", reject_clipboard)
+    target = tmp_path / "annotated.png"
+    paths = iter((None, target))
+    monkeypatch.setattr(
+        controller_module, "choose_image_save_path", lambda *_args, **_kwargs: next(paths)
+    )
+    exported = []
+    controller.snapshot_ready.connect(exported.append)
+    workbench.show()
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(40, 60))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(360, 260))
+    canvas = overlay._canvas
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.RECTANGLE], Qt.MouseButton.LeftButton)
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(60, 85))
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(240, 190))
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.MOSAIC], Qt.MouseButton.LeftButton)
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(85, 80))
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(260, 160))
+    preview = canvas._preview_image()
+    assert preview != canvas._document.source
+
+    QTest.keyClick(canvas, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert controller._overlay is overlay
+    assert not exported
+    assert attempted_copies == [bytes(preview.constBits())]
+
+    QTest.keyClick(canvas, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert controller._overlay is overlay
+    assert not target.exists()
+    assert canvas._preview_image() == preview
+    QTest.keyClick(canvas, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    for _ in range(100):
+        if exported:
+            break
+        QApplication.processEvents()
+        sleep(0.01)
+
+    assert len(exported) == 1
+    assert controller._overlay is None
+    assert workbench.isVisible()
+    assert exported[0].to_image() == preview
+    with Image.open(target) as image:
+        assert image.size == (preview.width(), preview.height())
+        assert image.tobytes() == exported[0].rgba_pixels

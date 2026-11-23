@@ -2,7 +2,7 @@ import pytest
 from PySide6.QtGui import QColor, QImage
 
 from e2s.annotation.document import AnnotationDocument
-from e2s.annotation.elements import Stroke, Text, Tool
+from e2s.annotation.elements import Mosaic, Stroke, Text, Tool
 from e2s.annotation.renderer import hit_test, render_annotations
 from e2s.annotation.resize import ElementResize, resize_bounds
 from e2s.capture.geometry import ResizeHandle
@@ -73,6 +73,58 @@ def test_lines_arrow_wings_and_freehand_use_source_pixel_width() -> None:
     assert hit_test((dot,), (60, 70), 0) == 0
 
 
+def test_overlapping_mosaics_average_visible_edge_blocks_and_keep_fixed_phase() -> None:
+    source = image_with_color(7, 4, "#000000")
+    for x, shade in enumerate(range(0, 241, 40)):
+        for y in range(source.height()):
+            source.setPixelColor(x, y, QColor(shade, shade, shade))
+    first = Mosaic((-1, 0), (6, 3), 3)
+    second = Mosaic((1, 0), (7, 3), 3)
+    initial = render_annotations(source, (first,))
+    combined = render_annotations(source, (first, second))
+    assert [initial.pixelColor(x, 0).red() for x in range(7)] == [20, 20, 120, 120, 120, 200, 240]
+    assert [combined.pixelColor(x, 0).red() for x in range(7)] == [20, 87, 87, 87, 187, 187, 187]
+    assert [combined.pixelColor(x, 3).red() for x in range(7)] == list(range(0, 241, 40))
+
+
+def test_mosaic_processes_only_lower_layers_and_undo_restores_original_pixels() -> None:
+    source = image_with_color(12, 12, "#ffffff")
+    document = AnnotationDocument(source)
+    document.add(Stroke(Tool.RECTANGLE, ((0, 0), (4, 12)), "#ff0000", 2, True))
+    unmosaiced = render_annotations(source, document.elements)
+    document.add(Mosaic((0, 0), (8, 8), 8))
+    document.add(Stroke(Tool.RECTANGLE, ((1, 1), (3, 3)), "#0000ff", 2, True))
+    layered = render_annotations(source, document.elements)
+    assert layered.pixelColor(1, 1) == QColor("#0000ff")
+    assert layered.pixelColor(4, 4) == QColor("#ff8080")
+    assert layered.pixelColor(8, 4) == QColor("#ffffff")
+    document.undo()
+    document.undo()
+    assert render_annotations(source, document.elements) == unmosaiced
+    document.redo()
+    document.redo()
+    assert render_annotations(source, document.elements) == layered
+
+
+def test_recropping_keeps_mosaic_blocks_aligned_to_the_frozen_frame() -> None:
+    source = image_with_color(12, 4, "#000000")
+    for x in range(source.width()):
+        for y in range(source.height()):
+            source.setPixelColor(x, y, QColor(x * 10, x * 10, x * 10))
+    mosaic = Mosaic((2, 0), (10, 4), 4)
+    document = AnnotationDocument(source.copy(0, 0, 10, 4))
+    document.add(mosaic)
+    document.set_source(source.copy(4, 0, 8, 4), (4, 0))
+    rendered = render_annotations(document.source, document.elements, document.origin_px)
+    assert [rendered.pixelColor(x, 0).red() for x in range(8)] == [
+        45, 45, 75, 75, 75, 75, 100, 110
+    ]
+    document.undo()
+    assert document.elements == ()
+    document.redo()
+    assert document.elements == (mosaic,)
+
+
 @pytest.mark.parametrize(
     ("element", "expected"),
     [
@@ -84,6 +136,7 @@ def test_lines_arrow_wings_and_freehand_use_source_pixel_width() -> None:
             Stroke(Tool.PEN, ((10, 20), (15, 30), (30, 25)), "#ff0000", 3),
             Stroke(Tool.PEN, ((10, 20), (20, 40), (50, 30)), "#ff0000", 3),
         ),
+        (Mosaic((30, 30), (10, 20), 6), Mosaic((50, 40), (10, 20), 6)),
     ],
 )
 def test_box_resize_keeps_the_opposite_corner_and_source_pixel_style(element, expected) -> None:

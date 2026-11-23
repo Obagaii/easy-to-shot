@@ -18,6 +18,7 @@ class Tool(StrEnum):
     ARROW = "arrow"
     PEN = "pen"
     TEXT = "text"
+    MOSAIC = "mosaic"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,4 +45,16 @@ class Text:
         return replace(self, origin=(x + dx, y + dy))
 
 
-type Element = Stroke | Text
+@dataclass(frozen=True, slots=True)
+class Mosaic:
+    start: Point
+    end: Point
+    block_size_px: int
+
+    def translated(self, dx: float, dy: float) -> Self:
+        x1, y1 = self.start
+        x2, y2 = self.end
+        return replace(self, start=(x1 + dx, y1 + dy), end=(x2 + dx, y2 + dy))
+
+
+type Element = Stroke | Text | Mosaic
