@@ -2,7 +2,7 @@ import { Alert, Button, ConfigProvider, Layout, Menu, Typography } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { createBridge } from '../bridge';
-import type { HistoryItem, SettingsDraft, SettingsResult } from '../bridge';
+import type { HistoryItem, SettingsDraft, SettingsResult, TaskResult } from '../bridge';
 import { createThemeConfig } from './theme';
 import { useReducedMotion } from './useReducedMotion';
 import { HistoryPage } from '../pages/HistoryPage';
@@ -46,10 +46,19 @@ export function App() {
     void bridge.resetSettings().then(setSettings);
   };
 
-  const handleDelete = (historyItemId: string) => {
-    void bridge.deleteHistoryItem(historyItemId).then(() =>
-      bridge.listHistory({ offset: 0, limit: 100 }).then((list) => setHistoryItems(list.items))
-    );
+  const handleDelete = async (historyItemId: string): Promise<TaskResult> => {
+    const result = await bridge.deleteHistoryItem(historyItemId);
+    if (result.state === 'succeeded') {
+      const list = await bridge.listHistory({ offset: 0, limit: 100 });
+      setHistoryItems(list.items);
+    }
+    return result;
+  };
+
+  const handleClear = async (): Promise<TaskResult> => {
+    const result = await bridge.clearHistory();
+    if (result.state === 'succeeded') setHistoryItems([]);
+    return result;
   };
 
   return (
@@ -84,9 +93,10 @@ export function App() {
             <HistoryPage
               items={historyItems}
               isLoading={isLoading}
-              onCopy={(id) => void bridge.copyHistoryItem(id)}
-              onSaveAs={(id) => void bridge.saveHistoryItemAs(id)}
+              onCopy={(id) => bridge.copyHistoryItem(id)}
+              onSaveAs={(id) => bridge.saveHistoryItemAs(id)}
               onDelete={handleDelete}
+              onClear={handleClear}
             />
           ) : (
             <SettingsPage

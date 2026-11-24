@@ -10,6 +10,15 @@ import type {
   WorkbenchBridge,
 } from './types.ts';
 
+// 合成可公开预览图，避免开发期依赖外部资源；内容仅作为文本传入界面。
+function previewDataUrl(label: string, fill: string): string {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">' +
+    `<rect width="320" height="180" fill="${fill}"/>` +
+    `<text x="20" y="100" fill="#ffffff" font-size="24">${label}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
 const defaultSettings: SettingsDraft = {
   hotkey: 'Ctrl+Shift+F8',
   outputDirectory: '',
@@ -28,7 +37,7 @@ const mockItems: HistoryItem[] = [
     widthPx: 1920,
     heightPx: 1080,
     byteSize: 248120,
-    previewUrl: 'e2s://app/preview/h-001',
+    previewUrl: previewDataUrl('截图 01', '#4a7fd4'),
   },
   {
     historyItemId: 'h-002',
@@ -39,7 +48,7 @@ const mockItems: HistoryItem[] = [
     widthPx: 1280,
     heightPx: 720,
     byteSize: 96480,
-    previewUrl: 'e2s://app/preview/h-002',
+    previewUrl: previewDataUrl('截图 02', '#3f9e77'),
   },
   {
     historyItemId: 'h-003',
@@ -50,6 +59,7 @@ const mockItems: HistoryItem[] = [
     widthPx: 2560,
     heightPx: 1440,
     byteSize: 512640,
+    // 保留不可达地址，用于验证缩略图失败与重试反馈。
     previewUrl: 'e2s://app/preview/h-003',
   },
 ];

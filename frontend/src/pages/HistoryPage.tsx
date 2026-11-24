@@ -1,32 +1,245 @@
-import { Button, Card, Drawer, Empty, Modal, Skeleton, Space, Typography } from 'antd';
-import { useState } from 'react';
-import type { HistoryItem } from '../bridge';
+import {
+  Alert,
+  Button,
+  Card,
+  Drawer,
+  Empty,
+  Modal,
+  Skeleton,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+} from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import type { HistoryItem, TaskResult } from '../bridge';
 
 interface HistoryPageProps {
   items: HistoryItem[];
   isLoading: boolean;
-  onCopy: (historyItemId: string) => void;
-  onSaveAs: (historyItemId: string) => void;
-  onDelete: (historyItemId: string) => void;
+  onCopy: (historyItemId: string) => Promise<TaskResult>;
+  onSaveAs: (historyItemId: string) => Promise<TaskResult>;
+  onDelete: (historyItemId: string) => Promise<TaskResult>;
+  onClear: () => Promise<TaskResult>;
 }
 
-export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: HistoryPageProps) {
+type PreviewState = 'loading' | 'loaded' | 'failed';
+type FeedbackState = 'idle' | 'busy' | 'succeeded' | 'failed' | 'cancelled';
+
+interface TaskFeedback {
+  state: FeedbackState;
+  action: string;
+  operationId: string | null;
+  errorCode: string | null;
+}
+
+const idleFeedback: TaskFeedback = {
+  state: 'idle',
+  action: '',
+  operationId: null,
+  errorCode: null,
+};
+
+const sourceLabels: Record<string, string> = {
+  capture: '截图',
+  copy: '复制',
+  save: '保存',
+  pin: '贴图',
+};
+
+const errorMessages: Record<string, string> = {
+  not_found: '记录不存在，请刷新后重试。',
+  clipboard_write_failed: '复制失败，请重试。',
+  directory_not_writable: '输出目录不可写。',
+  queue_full: '任务较多，请稍后重试。',
+};
+
+function sourceLabel(source: string): string {
+  return sourceLabels[source] ?? source;
+}
+
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  return `${(value / 1024).toFixed(1)} KB`;
+}
+
+function feedbackMessage(feedback: TaskFeedback): string {
+  if (feedback.state === 'busy') return `${feedback.action}处理中…`;
+  if (feedback.state === 'succeeded') return `${feedback.action}成功`;
+  if (feedback.state === 'cancelled') return `${feedback.action}已取消，页面保持不变`;
+  const detail = feedback.errorCode
+    ? errorMessages[feedback.errorCode] ?? feedback.errorCode
+    : '请重试';
+  return `${feedback.action}失败：${detail}`;
+}
+
+interface PreviewImageProps {
+  item: HistoryItem;
+  variant: 'thumb' | 'full';
+}
+
+function PreviewImage({ item, variant }: PreviewImageProps) {
+  const [state, setState] = useState<PreviewState>(
+    item.previewUrl ? 'loading' : 'failed'
+  );
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    setState(item.previewUrl ? 'loading' : 'failed');
+    setAttempt(0);
+  }, [item.historyItemId, item.previewUrl]);
+
+  if (state === 'failed') {
+    return (
+      <div className={`preview-fallback preview-fallback-${variant}`} role="status">
+        <Typography.Text type="secondary">预览不可用</Typography.Text>
+        <Button
+          size="small"
+          onClick={() => {
+            setAttempt((count) => count + 1);
+            setState('loading');
+          }}
+        >
+          重试
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`preview-frame preview-frame-${variant}`}>
+      {state === 'loading' && <Spin size="small" />}
+      <img
+        key={`${item.historyItemId}-${attempt}`}
+        className={`preview-image preview-image-${variant} ${
+          state === 'loaded' ? 'is-visible' : ''
+        }`}
+        src={item.previewUrl}
+        alt={`历史记录 ${item.historyItemId} 的预览`}
+        loading="lazy"
+        onLoad={() => setState('loaded')}
+        onError={() => setState('failed')}
+      />
+    </div>
+  );
+}
+
+export function HistoryPage({
+  items,
+  isLoading,
+  onCopy,
+  onSaveAs,
+  onDelete,
+  onClear,
+}: HistoryPageProps) {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
+  const [feedback, setFeedback] = useState<TaskFeedback>(idleFeedback);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const busyRef = useRef(false);
+  const taskTokenRef = useRef(0);
+  const isMountedRef = useRef(true);
   const selectedItem = items.find((item) => item.historyItemId === selectedItemId) ?? null;
 
-  const handleDelete = () => {
-    if (selectedItemId) onDelete(selectedItemId);
-    setIsConfirmOpen(false);
-    setSelectedItemId(null);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const openPreview = (historyItemId: string, trigger: HTMLElement) => {
+    triggerRef.current = trigger;
+    setSelectedItemId(historyItemId);
   };
+
+  const closePreview = () => setSelectedItemId(null);
+
+  const restoreFocus = (isOpen: boolean) => {
+    if (isOpen) return;
+    (triggerRef.current ?? pageRef.current)?.focus();
+  };
+
+  const runTask = async (action: string, call: () => Promise<TaskResult>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const token = ++taskTokenRef.current;
+    setFeedback({ state: 'busy', action, operationId: null, errorCode: null });
+    try {
+      const result = await call();
+      if (!isMountedRef.current || token !== taskTokenRef.current) return;
+      const state: FeedbackState =
+        result.state === 'succeeded' || result.state === 'cancelled'
+          ? result.state
+          : 'failed';
+      setFeedback({
+        state,
+        action,
+        operationId: result.operationId,
+        errorCode: result.errorCode,
+      });
+      if (state === 'succeeded' && (action === '删除' || action === '清空')) {
+        setIsConfirmOpen(false);
+        setIsClearConfirmOpen(false);
+        closePreview();
+        triggerRef.current = null;
+      }
+    } catch {
+      if (isMountedRef.current && token === taskTokenRef.current) {
+        setFeedback({ state: 'failed', action, operationId: null, errorCode: 'unexpected' });
+      }
+    } finally {
+      busyRef.current = false;
+    }
+  };
+
+  const isBusy = feedback.state === 'busy';
+  const alertType =
+    feedback.state === 'succeeded'
+      ? 'success'
+      : feedback.state === 'busy'
+        ? 'info'
+        : feedback.state === 'cancelled'
+          ? 'warning'
+          : 'error';
 
   if (isLoading) {
     return <Skeleton active paragraph={{ rows: 4 }} />;
   }
 
   return (
-    <div className="history-page">
+    <div className="history-page" ref={pageRef} tabIndex={-1}>
+      <div className="history-toolbar">
+        <Typography.Text type="secondary">共 {items.length} 条记录</Typography.Text>
+        <Button
+          danger
+          disabled={items.length === 0 || isBusy}
+          onClick={() => setIsClearConfirmOpen(true)}
+        >
+          清空
+        </Button>
+      </div>
+
+      {feedback.state !== 'idle' && (
+        <Alert
+          className="history-page-status"
+          type={alertType}
+          showIcon
+          message={feedbackMessage(feedback)}
+          description={
+            feedback.operationId ? `操作 ${feedback.operationId}` : undefined
+          }
+        />
+      )}
+
       {items.length === 0 ? (
         <Empty description="暂无历史记录" />
       ) : (
@@ -36,13 +249,23 @@ export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: Hi
               key={item.historyItemId}
               hoverable
               className="history-card"
-              onClick={() => setSelectedItemId(item.historyItemId)}
-              cover={<div className="history-thumb" />}
+              role="button"
+              tabIndex={0}
+              aria-label={`查看历史记录 ${item.historyItemId}`}
+              onClick={(event) => openPreview(item.historyItemId, event.currentTarget)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  openPreview(item.historyItemId, event.currentTarget);
+                }
+              }}
+              cover={<PreviewImage item={item} variant="thumb" />}
             >
               <Card.Meta
-                title={item.createdAtUtc}
-                description={`${item.widthPx} × ${item.heightPx}`}
+                title={formatTimestamp(item.createdAtUtc)}
+                description={`${item.widthPx} × ${item.heightPx} · ${formatBytes(item.byteSize)}`}
               />
+              <Tag className="history-source">{sourceLabel(item.source)}</Tag>
             </Card>
           ))}
         </div>
@@ -51,29 +274,49 @@ export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: Hi
       <Drawer
         title="预览"
         open={selectedItem !== null}
-        onClose={() => setSelectedItemId(null)}
+        onClose={closePreview}
+        afterOpenChange={restoreFocus}
         footer={
           <Space>
             <Button
               type="primary"
-              onClick={() => selectedItem && onCopy(selectedItem.historyItemId)}
+              disabled={isBusy}
+              onClick={() =>
+                selectedItem &&
+                void runTask('复制', () => onCopy(selectedItem.historyItemId))
+              }
             >
               复制
             </Button>
-            <Button onClick={() => selectedItem && onSaveAs(selectedItem.historyItemId)}>
+            <Button
+              disabled={isBusy}
+              onClick={() =>
+                selectedItem &&
+                void runTask('另存', () => onSaveAs(selectedItem.historyItemId))
+              }
+            >
               另存
             </Button>
-            <Button danger onClick={() => setIsConfirmOpen(true)}>删除</Button>
+            <Button danger disabled={isBusy} onClick={() => setIsConfirmOpen(true)}>
+              删除
+            </Button>
           </Space>
         }
       >
-        <div className="history-preview" />
         {selectedItem && (
-          <Typography.Paragraph>
-            记录 {selectedItem.historyItemId} · {selectedItem.widthPx} × {selectedItem.heightPx}
-            <br />
-            预览来源：{selectedItem.previewUrl}
-          </Typography.Paragraph>
+          <>
+            <PreviewImage item={selectedItem} variant="full" />
+            <Typography.Paragraph>
+              记录 {selectedItem.historyItemId}
+              <br />
+              时间 {formatTimestamp(selectedItem.createdAtUtc)}
+              <br />
+              像素 {selectedItem.widthPx} × {selectedItem.heightPx} · 大小{' '}
+              {formatBytes(selectedItem.byteSize)}
+              <br />
+              来源 {sourceLabel(selectedItem.source)}
+            </Typography.Paragraph>
+          </>
         )}
       </Drawer>
 
@@ -81,12 +324,27 @@ export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: Hi
         title="删除这条历史记录？"
         open={isConfirmOpen}
         okText="删除"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, disabled: isBusy }}
         cancelText="取消"
-        onOk={handleDelete}
+        onOk={() =>
+          selectedItem &&
+          void runTask('删除', () => onDelete(selectedItem.historyItemId))
+        }
         onCancel={() => setIsConfirmOpen(false)}
       >
         删除后无法恢复，用户另存的文件不受影响。
+      </Modal>
+
+      <Modal
+        title="清空全部历史记录？"
+        open={isClearConfirmOpen}
+        okText="清空"
+        okButtonProps={{ danger: true, disabled: isBusy }}
+        cancelText="取消"
+        onOk={() => void runTask('清空', onClear)}
+        onCancel={() => setIsClearConfirmOpen(false)}
+      >
+        清空后无法恢复，用户另存的文件不受影响。
       </Modal>
     </div>
   );
