@@ -38,12 +38,16 @@ export function App() {
     };
   }, [bridge]);
 
-  const handleSaveSettings = (draft: SettingsDraft) => {
-    void bridge.saveSettings(draft).then(setSettings);
+  const handleSaveSettings = async (draft: SettingsDraft): Promise<SettingsResult> => {
+    const result = await bridge.saveSettings(draft);
+    if (!result.errorCode) setSettings(result);
+    return result;
   };
 
-  const handleResetSettings = () => {
-    void bridge.resetSettings().then(setSettings);
+  const handleResetSettings = async (): Promise<SettingsResult> => {
+    const result = await bridge.resetSettings();
+    if (!result.errorCode) setSettings(result);
+    return result;
   };
 
   const handleDelete = async (historyItemId: string): Promise<TaskResult> => {

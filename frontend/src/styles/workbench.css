@@ -109,6 +109,21 @@ body {
 
 .settings-form { max-width: 480px; }
 
+.settings-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 480px;
+  margin-bottom: var(--workbench-gap);
+}
+
+.settings-feedback { max-width: 480px; margin-bottom: var(--workbench-gap); }
+
+.settings-page button:focus-visible {
+  outline: 2px solid #185fa5;
+  outline-offset: 2px;
+}
+
 .page-hint { color: var(--color-text-muted); }
 
 @media (prefers-reduced-motion: reduce) {
