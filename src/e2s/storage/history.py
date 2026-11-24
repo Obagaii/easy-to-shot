@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import tempfile
 import uuid
@@ -18,8 +19,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from e2s.output.files import encode_png
+from e2s.output.ports import TaskState
 
 if TYPE_CHECKING:
+    from e2s.output.files import SaveResult
+    from e2s.output.ports import TaskResult
     from e2s.output.service import OutputSnapshot
 
 DEFAULT_HISTORY_LIMIT = 100
@@ -150,7 +154,7 @@ class HistoryStore:
         if not is_enabled:
             return HistoryResult(HistoryStatus.DISABLED)
         try:
-            self._ensure_schema()
+            self.ensure_schema()
             existing = self._find_duplicate(snapshot.session_id, snapshot.revision)
         except (sqlite3.Error, OSError):
             return HistoryResult(
@@ -179,7 +183,7 @@ class HistoryStore:
             image_key=image_key,
         )
         if not self._insert_item(item):
-            self._remove_image(image_key)
+            self.remove_image(image_key)
             concurrent = self._find_duplicate_safe(item.session_id, item.result_revision)
             if concurrent is not None:
                 return HistoryResult(HistoryStatus.DUPLICATE, item=concurrent)
@@ -192,7 +196,7 @@ class HistoryStore:
         self, limit: int = DEFAULT_HISTORY_LIMIT, offset: int = 0
     ) -> tuple[HistoryItem, ...]:
         try:
-            self._ensure_schema()
+            self.ensure_schema()
             with closing(sqlite3.connect(self._db_path)) as conn:
                 rows = conn.execute(
                     _SELECT_FIELDS + " ORDER BY created_at_utc DESC LIMIT ? OFFSET ?",
@@ -204,13 +208,13 @@ class HistoryStore:
 
     def count(self) -> int:
         try:
-            self._ensure_schema()
+            self.ensure_schema()
             with closing(sqlite3.connect(self._db_path)) as conn:
                 return int(conn.execute("SELECT COUNT(*) FROM history_items").fetchone()[0])
         except (sqlite3.Error, OSError):
             return 0
 
-    def _ensure_schema(self) -> None:
+    def ensure_schema(self) -> None:
         self._images_dir.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self._db_path)) as conn:
             conn.executescript(_SCHEMA)
@@ -261,8 +265,145 @@ class HistoryStore:
                 except OSError:
                     pass
 
-    def _remove_image(self, image_key: str) -> None:
+    def remove_image(self, image_key: str) -> None:
         try:
             (self._images_dir / image_key).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+class RepairStatus(StrEnum):
+    """启动修复结果。"""
+
+    OK = "ok"
+    REBUILT = "rebuilt"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class RepairReport:
+    """缺图、超额清理与数据库重建的结果，供启动时反馈。"""
+
+    status: RepairStatus
+    missing_images: tuple[str, ...] = ()
+    pruned_items: int = 0
+    database_rebuilt: bool = False
+    error_code: str = ""
+
+
+class HistoryService:
+    """订阅输出成功通知，并在启动时检查索引与图像的一致性。"""
+
+    def __init__(self, store: HistoryStore) -> None:
+        self._store = store
+
+    @property
+    def store(self) -> HistoryStore:
+        return self._store
+
+    def record_success(
+        self,
+        snapshot: "OutputSnapshot",
+        result: "TaskResult | SaveResult",
+        source: str,
+        *,
+        is_enabled: bool = True,
+        limit: int = DEFAULT_HISTORY_LIMIT,
+    ) -> HistoryResult:
+        if getattr(result, "state", None) is not TaskState.SUCCEEDED:
+            return HistoryResult(HistoryStatus.SKIPPED)
+        outcome = self._store.record(snapshot, source, is_enabled=is_enabled)
+        if outcome.status is HistoryStatus.RECORDED:
+            self._prune(limit)
+        return outcome
+
+    def repair_on_startup(self, limit: int = DEFAULT_HISTORY_LIMIT) -> RepairReport:
+        rebuilt = False
+        try:
+            self._store.ensure_schema()
+        except sqlite3.DatabaseError:
+            rebuilt = self._rebuild_corrupt_database()
+            if not rebuilt:
+                return RepairReport(
+                    RepairStatus.FAILED, error_code="database_unavailable"
+                )
+        except OSError:
+            return RepairReport(RepairStatus.FAILED, error_code="storage_unavailable")
+        items = self._store.list_recent(limit=1_000_000)
+        missing = tuple(
+            item.history_item_id
+            for item in items
+            if not self._store.is_available(item)
+        )
+        pruned = self._prune(limit)
+        status = RepairStatus.REBUILT if rebuilt else RepairStatus.OK
+        if missing:
+            status = RepairStatus.PARTIAL if not rebuilt else status
+        return RepairReport(status, missing, pruned, rebuilt)
+
+    def delete(self, history_item_id: str) -> HistoryStatus:
+        try:
+            with closing(sqlite3.connect(self._store.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT image_key FROM history_items WHERE history_item_id = ?",
+                    (history_item_id,),
+                ).fetchone()
+                if row is None:
+                    return HistoryStatus.NOT_FOUND
+                conn.execute(
+                    "DELETE FROM history_items WHERE history_item_id = ?",
+                    (history_item_id,),
+                )
+                conn.commit()
+            self._store.remove_image(str(row[0]))
+            return HistoryStatus.DELETED
+        except (sqlite3.Error, OSError):
+            return HistoryStatus.DATABASE_FAILED
+
+    def clear(self) -> HistoryStatus:
+        try:
+            items = self._store.list_recent(limit=1_000_000)
+            with closing(sqlite3.connect(self._store.db_path)) as conn:
+                conn.execute("DELETE FROM history_items")
+                conn.commit()
+            for item in items:
+                self._store.remove_image(item.image_key)
+            return HistoryStatus.DELETED
+        except (sqlite3.Error, OSError):
+            return HistoryStatus.DATABASE_FAILED
+
+    def _prune(self, limit: int) -> int:
+        if limit < 1:
+            return 0
+        try:
+            with closing(sqlite3.connect(self._store.db_path)) as conn:
+                rows = conn.execute(
+                    _SELECT_FIELDS + " ORDER BY created_at_utc DESC LIMIT -1 OFFSET ?",
+                    (limit,),
+                ).fetchall()
+                if not rows:
+                    return 0
+                items = tuple(_row_to_item(row) for row in rows)
+                conn.executemany(
+                    "DELETE FROM history_items WHERE history_item_id = ?",
+                    [(item.history_item_id,) for item in items],
+                )
+                conn.commit()
+            for item in items:
+                self._store.remove_image(item.image_key)
+            return len(items)
+        except (sqlite3.Error, OSError):
+            return 0
+
+    def _rebuild_corrupt_database(self) -> bool:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup = self._store.db_path.parent / f"index.corrupt.{stamp}.sqlite3"
+        try:
+            if self._store.db_path.exists():
+                shutil.copyfile(self._store.db_path, backup)
+                self._store.db_path.unlink()
+            self._store.ensure_schema()
+            return True
+        except (sqlite3.Error, OSError):
+            return False
