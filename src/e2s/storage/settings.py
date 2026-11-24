@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 DEFAULT_HOTKEY = "Ctrl+Shift+F8"
 DEFAULT_HISTORY_LIMIT = 200
@@ -277,3 +277,115 @@ class SettingsStore:
         except OSError:
             diagnostic_path = ""
         return LoadResult(AppSettings(), SettingsStatus.CORRUPT, diagnostic_path)
+
+
+class HotkeyStatus(StrEnum):
+    """热键注册结果，错误取值与 A 的 HotkeyError 对齐。"""
+
+    ACTIVE = "active"
+    INVALID = "invalid"
+    RESERVED = "reserved"
+    CONFLICT = "conflict"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class HotkeyState:
+    """实际生效的热键及其注册状态。"""
+
+    active_hotkey: str | None
+    status: HotkeyStatus
+    error_code: str = ""
+
+
+class HotkeyRegistrar(Protocol):
+    """由 A 的平台适配层实现；设置服务不持有窗口对象、不调用 Qt API。"""
+
+    def register(self, hotkey: str) -> HotkeyState:
+        """注册新热键并返回实际状态。"""
+
+    def restore(self, hotkey: str) -> HotkeyState:
+        """写入失败时恢复原热键并返回实际状态。"""
+
+
+class StaticHotkeyRegistrar:
+    """平台层未接入前的本地模拟实现，用于服务独立运行与验证。"""
+
+    def register(self, hotkey: str) -> HotkeyState:
+        return HotkeyState(hotkey, HotkeyStatus.ACTIVE)
+
+    def restore(self, hotkey: str) -> HotkeyState:
+        return HotkeyState(hotkey, HotkeyStatus.ACTIVE)
+
+
+class ApplyStatus(StrEnum):
+    """设置应用结果；任一失败均回退到原设置。"""
+
+    APPLIED = "applied"
+    INVALID_DRAFT = "invalid_draft"
+    HOTKEY_REJECTED = "hotkey_rejected"
+    WRITE_FAILED = "write_failed"
+    ROLLBACK_FAILED = "rollback_failed"
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    """最终生效的设置、状态、实际热键与错误码。"""
+
+    settings: AppSettings
+    status: ApplyStatus
+    active_hotkey: str | None
+    error_code: str = ""
+
+
+class SettingsService:
+    """组合设置存储与热键注册，保证失败时原设置与实际热键一致。"""
+
+    def __init__(
+        self, store: SettingsStore, registrar: HotkeyRegistrar | None = None
+    ) -> None:
+        self._store = store
+        self._registrar: HotkeyRegistrar = registrar or StaticHotkeyRegistrar()
+
+    def load(self) -> LoadResult:
+        return self._store.load()
+
+    def apply(self, draft: AppSettings) -> ApplyResult:
+        current = self._store.load().settings
+        issues = validate_settings(draft)
+        if issues:
+            return ApplyResult(
+                current, ApplyStatus.INVALID_DRAFT, current.hotkey, issues[0].error_code
+            )
+
+        registered: HotkeyState | None = None
+        if draft.hotkey != current.hotkey:
+            registered = self._registrar.register(draft.hotkey)
+            if registered.status is not HotkeyStatus.ACTIVE:
+                return ApplyResult(
+                    current,
+                    ApplyStatus.HOTKEY_REJECTED,
+                    registered.active_hotkey,
+                    registered.error_code or registered.status.value,
+                )
+
+        saved = self._store.save(draft)
+        if saved is not SettingsStatus.OK:
+            active = registered.active_hotkey if registered else current.hotkey
+            if registered is not None:
+                rollback = self._registrar.restore(current.hotkey)
+                active = rollback.active_hotkey
+                if rollback.status is not HotkeyStatus.ACTIVE:
+                    return ApplyResult(
+                        current,
+                        ApplyStatus.ROLLBACK_FAILED,
+                        active,
+                        rollback.error_code or rollback.status.value,
+                    )
+            return ApplyResult(current, ApplyStatus.WRITE_FAILED, active, saved.value)
+
+        return ApplyResult(
+            draft,
+            ApplyStatus.APPLIED,
+            registered.active_hotkey if registered else current.hotkey,
+        )
