@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Card,
   Drawer,
@@ -11,23 +12,46 @@ import {
   Typography,
 } from 'antd';
 import { useEffect, useRef, useState } from 'react';
-import type { HistoryItem } from '../bridge';
+import type { HistoryItem, TaskResult } from '../bridge';
 
 interface HistoryPageProps {
   items: HistoryItem[];
   isLoading: boolean;
-  onCopy: (historyItemId: string) => void;
-  onSaveAs: (historyItemId: string) => void;
-  onDelete: (historyItemId: string) => void;
+  onCopy: (historyItemId: string) => Promise<TaskResult>;
+  onSaveAs: (historyItemId: string) => Promise<TaskResult>;
+  onDelete: (historyItemId: string) => Promise<TaskResult>;
+  onClear: () => Promise<TaskResult>;
 }
 
 type PreviewState = 'loading' | 'loaded' | 'failed';
+type FeedbackState = 'idle' | 'busy' | 'succeeded' | 'failed' | 'cancelled';
+
+interface TaskFeedback {
+  state: FeedbackState;
+  action: string;
+  operationId: string | null;
+  errorCode: string | null;
+}
+
+const idleFeedback: TaskFeedback = {
+  state: 'idle',
+  action: '',
+  operationId: null,
+  errorCode: null,
+};
 
 const sourceLabels: Record<string, string> = {
   capture: '截图',
   copy: '复制',
   save: '保存',
   pin: '贴图',
+};
+
+const errorMessages: Record<string, string> = {
+  not_found: '记录不存在，请刷新后重试。',
+  clipboard_write_failed: '复制失败，请重试。',
+  directory_not_writable: '输出目录不可写。',
+  queue_full: '任务较多，请稍后重试。',
 };
 
 function sourceLabel(source: string): string {
@@ -43,6 +67,16 @@ function formatTimestamp(value: string): string {
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
   return `${(value / 1024).toFixed(1)} KB`;
+}
+
+function feedbackMessage(feedback: TaskFeedback): string {
+  if (feedback.state === 'busy') return `${feedback.action}处理中…`;
+  if (feedback.state === 'succeeded') return `${feedback.action}成功`;
+  if (feedback.state === 'cancelled') return `${feedback.action}已取消，页面保持不变`;
+  const detail = feedback.errorCode
+    ? errorMessages[feedback.errorCode] ?? feedback.errorCode
+    : '请重试';
+  return `${feedback.action}失败：${detail}`;
 }
 
 interface PreviewImageProps {
@@ -96,11 +130,31 @@ function PreviewImage({ item, variant }: PreviewImageProps) {
   );
 }
 
-export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: HistoryPageProps) {
+export function HistoryPage({
+  items,
+  isLoading,
+  onCopy,
+  onSaveAs,
+  onDelete,
+  onClear,
+}: HistoryPageProps) {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
+  const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
+  const [feedback, setFeedback] = useState<TaskFeedback>(idleFeedback);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const busyRef = useRef(false);
+  const taskTokenRef = useRef(0);
+  const isMountedRef = useRef(true);
   const selectedItem = items.find((item) => item.historyItemId === selectedItemId) ?? null;
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const openPreview = (historyItemId: string, trigger: HTMLElement) => {
     triggerRef.current = trigger;
@@ -110,24 +164,81 @@ export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: Hi
   const closePreview = () => setSelectedItemId(null);
 
   const restoreFocus = (isOpen: boolean) => {
-    if (!isOpen) triggerRef.current?.focus();
+    if (isOpen) return;
+    (triggerRef.current ?? pageRef.current)?.focus();
   };
 
-  const handleDelete = () => {
-    if (selectedItem) onDelete(selectedItem.historyItemId);
-    setIsConfirmOpen(false);
-    closePreview();
+  const runTask = async (action: string, call: () => Promise<TaskResult>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const token = ++taskTokenRef.current;
+    setFeedback({ state: 'busy', action, operationId: null, errorCode: null });
+    try {
+      const result = await call();
+      if (!isMountedRef.current || token !== taskTokenRef.current) return;
+      const state: FeedbackState =
+        result.state === 'succeeded' || result.state === 'cancelled'
+          ? result.state
+          : 'failed';
+      setFeedback({
+        state,
+        action,
+        operationId: result.operationId,
+        errorCode: result.errorCode,
+      });
+      if (state === 'succeeded' && (action === '删除' || action === '清空')) {
+        setIsConfirmOpen(false);
+        setIsClearConfirmOpen(false);
+        closePreview();
+        triggerRef.current = null;
+      }
+    } catch {
+      if (isMountedRef.current && token === taskTokenRef.current) {
+        setFeedback({ state: 'failed', action, operationId: null, errorCode: 'unexpected' });
+      }
+    } finally {
+      busyRef.current = false;
+    }
   };
+
+  const isBusy = feedback.state === 'busy';
+  const alertType =
+    feedback.state === 'succeeded'
+      ? 'success'
+      : feedback.state === 'busy'
+        ? 'info'
+        : feedback.state === 'cancelled'
+          ? 'warning'
+          : 'error';
 
   if (isLoading) {
     return <Skeleton active paragraph={{ rows: 4 }} />;
   }
 
   return (
-    <div className="history-page">
+    <div className="history-page" ref={pageRef} tabIndex={-1}>
       <div className="history-toolbar">
         <Typography.Text type="secondary">共 {items.length} 条记录</Typography.Text>
+        <Button
+          danger
+          disabled={items.length === 0 || isBusy}
+          onClick={() => setIsClearConfirmOpen(true)}
+        >
+          清空
+        </Button>
       </div>
+
+      {feedback.state !== 'idle' && (
+        <Alert
+          className="history-page-status"
+          type={alertType}
+          showIcon
+          message={feedbackMessage(feedback)}
+          description={
+            feedback.operationId ? `操作 ${feedback.operationId}` : undefined
+          }
+        />
+      )}
 
       {items.length === 0 ? (
         <Empty description="暂无历史记录" />
@@ -169,14 +280,24 @@ export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: Hi
           <Space>
             <Button
               type="primary"
-              onClick={() => selectedItem && onCopy(selectedItem.historyItemId)}
+              disabled={isBusy}
+              onClick={() =>
+                selectedItem &&
+                void runTask('复制', () => onCopy(selectedItem.historyItemId))
+              }
             >
               复制
             </Button>
-            <Button onClick={() => selectedItem && onSaveAs(selectedItem.historyItemId)}>
+            <Button
+              disabled={isBusy}
+              onClick={() =>
+                selectedItem &&
+                void runTask('另存', () => onSaveAs(selectedItem.historyItemId))
+              }
+            >
               另存
             </Button>
-            <Button danger onClick={() => setIsConfirmOpen(true)}>
+            <Button danger disabled={isBusy} onClick={() => setIsConfirmOpen(true)}>
               删除
             </Button>
           </Space>
@@ -203,12 +324,27 @@ export function HistoryPage({ items, isLoading, onCopy, onSaveAs, onDelete }: Hi
         title="删除这条历史记录？"
         open={isConfirmOpen}
         okText="删除"
-        okButtonProps={{ danger: true }}
+        okButtonProps={{ danger: true, disabled: isBusy }}
         cancelText="取消"
-        onOk={handleDelete}
+        onOk={() =>
+          selectedItem &&
+          void runTask('删除', () => onDelete(selectedItem.historyItemId))
+        }
         onCancel={() => setIsConfirmOpen(false)}
       >
         删除后无法恢复，用户另存的文件不受影响。
+      </Modal>
+
+      <Modal
+        title="清空全部历史记录？"
+        open={isClearConfirmOpen}
+        okText="清空"
+        okButtonProps={{ danger: true, disabled: isBusy }}
+        cancelText="取消"
+        onOk={() => void runTask('清空', onClear)}
+        onCancel={() => setIsClearConfirmOpen(false)}
+      >
+        清空后无法恢复，用户另存的文件不受影响。
       </Modal>
     </div>
   );
