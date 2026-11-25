@@ -112,6 +112,21 @@ export function createMockBridge(): WorkbenchBridge {
       if (draft.maxHistoryItems < 1) {
         return { ...readSettings(), errorCode: 'invalid_max_history_items' };
       }
+      // 开发期模拟：注册冲突与写入失败，供设置页反馈路径验证。
+      if (draft.hotkey === 'Ctrl+Shift+F9') {
+        return {
+          ...readSettings(),
+          hotkeyState: {
+            registered: false,
+            conflict: true,
+            effectiveHotkey: settings.hotkey,
+          },
+          errorCode: 'hotkey_conflict',
+        };
+      }
+      if (draft.outputDirectory === 'Z:\\invalid') {
+        return { ...readSettings(), errorCode: 'write_failed' };
+      }
       settings = { ...draft };
       return readSettings();
     },
