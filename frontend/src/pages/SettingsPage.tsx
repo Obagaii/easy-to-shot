@@ -1,28 +1,33 @@
 import {
   Alert,
   Button,
-  Form,
   Input,
   InputNumber,
   Modal,
   Skeleton,
   Space,
   Switch,
+  Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { ReloadOutlined } from '@ant-design/icons';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { HotkeyState, SettingsDraft, SettingsResult } from '../bridge';
 
 interface SettingsPageProps {
   settings: SettingsDraft | null;
   hotkeyState: HotkeyState | null;
   notice: string;
+  query: string;
   onSave: (draft: SettingsDraft) => Promise<SettingsResult>;
   onReset: () => Promise<SettingsResult>;
 }
 
 type FeedbackState = 'idle' | 'saving' | 'succeeded' | 'failed' | 'cancelled' | 'conflict';
+type SectionKey = 'capture' | 'storage' | 'about';
 
 interface Feedback {
   state: FeedbackState;
@@ -112,15 +117,35 @@ function describeResult(action: string, result: SettingsResult): Feedback {
   };
 }
 
+interface SettingsRowProps {
+  label: string;
+  description?: string;
+  children: ReactNode;
+}
+
+function SettingsRow({ label, description, children }: SettingsRowProps) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-text">
+        <div className="settings-row-label">{label}</div>
+        {description && <div className="settings-row-desc">{description}</div>}
+      </div>
+      <div className="settings-row-control">{children}</div>
+    </div>
+  );
+}
+
 export function SettingsPage({
   settings,
   hotkeyState,
   notice,
+  query,
   onSave,
   onReset,
 }: SettingsPageProps) {
   const [draft, setDraft] = useState<SettingsDraft | null>(settings);
   const [feedback, setFeedback] = useState<Feedback>(initialFeedback);
+  const [activeSection, setActiveSection] = useState<SectionKey>('capture');
   const [isResetOpen, setIsResetOpen] = useState(false);
   const busyRef = useRef(false);
   const taskTokenRef = useRef(0);
@@ -134,6 +159,20 @@ export function SettingsPage({
       isMountedRef.current = false;
     };
   }, []);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const matches = useMemo(
+    () => (...texts: string[]) =>
+      !normalizedQuery || texts.join(' ').toLowerCase().includes(normalizedQuery),
+    [normalizedQuery]
+  );
+
+  useEffect(() => {
+    if (!normalizedQuery) return;
+    if (matches('截图热键', '热键状态', '截图')) setActiveSection('capture');
+    else if (matches('输出目录', '历史记录', '历史保留条数', '存储')) setActiveSection('storage');
+    else if (matches('关于', '配置版本', '本地数据')) setActiveSection('about');
+  }, [normalizedQuery, matches]);
 
   if (!draft) {
     return <Skeleton active paragraph={{ rows: 5 }} />;
@@ -193,16 +232,144 @@ export function SettingsPage({
     setFeedback(initialFeedback);
   };
 
+  const openResetConfirm = (trigger: HTMLElement) => {
+    resetTriggerRef.current = trigger;
+    setIsResetOpen(true);
+  };
+
+  const sectionHeader = (title: string, description: string) => (
+    <div className="settings-section-head">
+      <div>
+        <Typography.Title level={5} className="settings-section-title">
+          {title}
+        </Typography.Title>
+        <Typography.Text type="secondary">{description}</Typography.Text>
+      </div>
+      <Tooltip title="恢复默认设置">
+        <Button
+          type="text"
+          icon={<ReloadOutlined />}
+          aria-label={`恢复${title}的默认设置`}
+          disabled={isBusy}
+          onClick={(event) => openResetConfirm(event.currentTarget)}
+        />
+      </Tooltip>
+    </div>
+  );
+
+  const captureSection = (
+    <div className="settings-section">
+      {sectionHeader('截图', '设置触发截图的方式与热键注册结果。')}
+      <div className="settings-rows">
+        {matches('截图热键', '例如 Ctrl+Shift+F8', '截图') && (
+          <SettingsRow label="截图热键" description="例如 Ctrl+Shift+F8">
+            <Input
+              value={draft.hotkey}
+              disabled={isBusy}
+              onChange={(event) => updateDraft({ hotkey: event.target.value })}
+            />
+          </SettingsRow>
+        )}
+        {matches('实际热键状态', '来自系统注册结果', '截图') && (
+          <SettingsRow label="实际热键状态" description="来自系统注册结果">
+            {hotkeyState ? (
+              <Space direction="vertical" size={4}>
+                <Space size="small">
+                  <Tag
+                    color={
+                      hotkeyState.conflict
+                        ? 'error'
+                        : hotkeyState.registered
+                          ? 'success'
+                          : 'warning'
+                    }
+                  >
+                    {hotkeyState.conflict
+                      ? '注册冲突'
+                      : hotkeyState.registered
+                        ? '已注册'
+                        : '未注册'}
+                  </Tag>
+                  <Typography.Text type="secondary">
+                    {hotkeyState.effectiveHotkey}
+                  </Typography.Text>
+                </Space>
+                {hotkeyState.conflict && (
+                  <Typography.Text type="danger" className="settings-row-note">
+                    草稿 {draft.hotkey} 未生效
+                  </Typography.Text>
+                )}
+              </Space>
+            ) : (
+              <Typography.Text type="secondary">读取中</Typography.Text>
+            )}
+          </SettingsRow>
+        )}
+      </div>
+    </div>
+  );
+
+  const storageSection = (
+    <div className="settings-section">
+      {sectionHeader('历史与存储', '管理输出目录与本地历史记录。')}
+      <div className="settings-rows">
+        {matches('默认输出目录', '留空则使用系统图片目录', '存储') && (
+          <SettingsRow label="默认输出目录" description="留空则使用系统图片目录">
+            <Input
+              value={draft.outputDirectory}
+              disabled={isBusy}
+              placeholder="例如 D:\\图片"
+              onChange={(event) => updateDraft({ outputDirectory: event.target.value })}
+            />
+          </SettingsRow>
+        )}
+        {matches('启用历史记录', '关闭后不再写入历史', '存储') && (
+          <SettingsRow label="启用历史记录" description="关闭后不再写入历史">
+            <Switch
+              checked={draft.historyEnabled}
+              disabled={isBusy}
+              onChange={(checked) => updateDraft({ historyEnabled: checked })}
+            />
+          </SettingsRow>
+        )}
+        {matches('历史保留条数', '1 至 10000', '存储') && (
+          <SettingsRow label="历史保留条数" description="1 至 10000">
+            <InputNumber
+              min={1}
+              max={10000}
+              value={draft.maxHistoryItems}
+              disabled={isBusy}
+              onChange={(value) => updateDraft({ maxHistoryItems: value ?? 100 })}
+            />
+          </SettingsRow>
+        )}
+      </div>
+    </div>
+  );
+
+  const aboutSection = (
+    <div className="settings-section">
+      {sectionHeader('关于', '本地版本与数据存储说明。')}
+      <div className="settings-rows">
+        {matches('配置版本', '本地存储结构版本', '关于') && (
+          <SettingsRow label="配置版本" description="本地存储结构版本">
+            <Typography.Text>v{draft.schemaVersion}</Typography.Text>
+          </SettingsRow>
+        )}
+        {matches('本地数据', '设置与历史保存在本机', '关于') && (
+          <SettingsRow label="本地数据" description="设置与历史保存在本机">
+            <Typography.Text type="secondary">不上传</Typography.Text>
+          </SettingsRow>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="settings-page">
       {notice && (
         <Alert className="settings-feedback" type="warning" showIcon message={notice} />
       )}
-      <div className="settings-toolbar">
-        <Tag color={isDirty ? 'gold' : 'default'}>{isDirty ? '未保存' : '已保存'}</Tag>
-        <Typography.Text type="secondary">配置版本 {draft.schemaVersion}</Typography.Text>
-      </div>
-
       {feedback.state !== 'idle' && (
         <Alert
           className="settings-feedback"
@@ -212,104 +379,39 @@ export function SettingsPage({
         />
       )}
 
-      <Form layout="vertical" className="settings-form">
-        <Form.Item
-          label="截图热键"
-          extra="例如 Ctrl+Shift+F8"
-        >
-          <Input
-            value={draft.hotkey}
+      <Tabs
+        className="settings-tabs"
+        activeKey={activeSection}
+        onChange={(key) => setActiveSection(key as SectionKey)}
+        items={[
+          { key: 'capture', label: '截图', children: captureSection },
+          { key: 'storage', label: '历史与存储', children: storageSection },
+          { key: 'about', label: '关于', children: aboutSection },
+        ]}
+      />
+
+      <div className="settings-footer">
+        <Space size="small" wrap>
+          <Tag color={isDirty ? 'gold' : 'default'}>{isDirty ? '未保存' : '已保存'}</Tag>
+          <Typography.Text type="secondary">配置版本 {draft.schemaVersion}</Typography.Text>
+        </Space>
+        <Space size="small">
+          <Button
             disabled={isBusy}
-            onChange={(event) => updateDraft({ hotkey: event.target.value })}
-          />
-        </Form.Item>
-
-        <Form.Item label="实际热键状态">
-          {hotkeyState ? (
-            <Space direction="vertical" size="small">
-              <Space>
-                <Tag
-                  color={
-                    hotkeyState.conflict
-                      ? 'error'
-                      : hotkeyState.registered
-                        ? 'success'
-                        : 'warning'
-                  }
-                >
-                  {hotkeyState.conflict
-                    ? '注册冲突'
-                    : hotkeyState.registered
-                      ? '已注册'
-                      : '未注册'}
-                </Tag>
-                <Typography.Text type="secondary">
-                  实际生效：{hotkeyState.effectiveHotkey}
-                </Typography.Text>
-              </Space>
-              {hotkeyState.conflict && (
-                <Typography.Text type="danger">
-                  草稿 {draft.hotkey} 未生效
-                </Typography.Text>
-              )}
-            </Space>
-          ) : (
-            <Typography.Text type="secondary">读取中</Typography.Text>
-          )}
-        </Form.Item>
-
-        <Form.Item
-          label="默认输出目录"
-          extra="留空则使用系统图片目录"
-        >
-          <Input
-            value={draft.outputDirectory}
+            onClick={(event) => openResetConfirm(event.currentTarget)}
+          >
+            恢复默认
+          </Button>
+          <Button
+            type="primary"
+            loading={isBusy}
             disabled={isBusy}
-            placeholder="例如 D:\\图片"
-            onChange={(event) => updateDraft({ outputDirectory: event.target.value })}
-          />
-        </Form.Item>
-
-        <Form.Item label="启用历史记录" extra="关闭后不再写入历史">
-          <Switch
-            checked={draft.historyEnabled}
-            disabled={isBusy}
-            onChange={(checked) => updateDraft({ historyEnabled: checked })}
-          />
-        </Form.Item>
-
-        <Form.Item label="历史保留条数">
-          <InputNumber
-            min={1}
-            max={10000}
-            value={draft.maxHistoryItems}
-            disabled={isBusy}
-            onChange={(value) => updateDraft({ maxHistoryItems: value ?? 100 })}
-          />
-        </Form.Item>
-
-        <Form.Item>
-          <Space>
-            <Button
-              type="primary"
-              loading={isBusy}
-              disabled={isBusy}
-              onClick={() => void runTask('保存', () => onSave(draft))}
-            >
-              保存
-            </Button>
-            <Button
-              disabled={isBusy}
-              onClick={(event) => {
-                resetTriggerRef.current = event.currentTarget;
-                setIsResetOpen(true);
-              }}
-            >
-              恢复默认
-            </Button>
-          </Space>
-        </Form.Item>
-      </Form>
+            onClick={() => void runTask('保存', () => onSave(draft))}
+          >
+            保存设置
+          </Button>
+        </Space>
+      </div>
 
       <Modal
         title="恢复默认设置？"
