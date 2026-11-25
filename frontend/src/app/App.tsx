@@ -2,7 +2,14 @@ import { Alert, Button, ConfigProvider, Layout, Menu, Typography } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { createBridge } from '../bridge';
-import type { HistoryItem, SettingsDraft, SettingsResult, TaskResult } from '../bridge';
+import type {
+  HistoryItem,
+  HistoryList,
+  HotkeyState,
+  SettingsDraft,
+  SettingsResult,
+  TaskResult,
+} from '../bridge';
 import { createThemeConfig } from './theme';
 import { useReducedMotion } from './useReducedMotion';
 import { HistoryPage } from '../pages/HistoryPage';
@@ -10,9 +17,48 @@ import { SettingsPage } from '../pages/SettingsPage';
 
 type PageKey = 'history' | 'settings';
 
+const defaultSettings: SettingsDraft = {
+  hotkey: 'Ctrl+Shift+F8',
+  outputDirectory: '',
+  historyEnabled: true,
+  maxHistoryItems: 100,
+  schemaVersion: 1,
+};
+
+const defaultHotkeyState: HotkeyState = {
+  registered: false,
+  conflict: false,
+  effectiveHotkey: defaultSettings.hotkey,
+};
+
+function fallbackResult(): SettingsResult {
+  return {
+    settings: { ...defaultSettings },
+    hotkeyState: { ...defaultHotkeyState },
+    errorCode: null,
+  };
+}
+
+function currentOrFallback(
+  currentSettings: SettingsResult | null,
+  currentHotkeyState: HotkeyState | null
+): SettingsResult {
+  return {
+    settings: currentSettings?.settings ?? { ...defaultSettings },
+    hotkeyState: currentHotkeyState ?? { ...defaultHotkeyState },
+    errorCode: 'settings_unavailable',
+  };
+}
+
+function noticeFor(draft: SettingsDraft): string {
+  return draft.outputDirectory ? '' : '未设置输出目录，首次输出时将使用系统图片目录。';
+}
+
 export function App() {
   const [activePage, setActivePage] = useState<PageKey>('history');
   const [settings, setSettings] = useState<SettingsResult | null>(null);
+  const [hotkeyState, setHotkeyState] = useState<HotkeyState | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState('');
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [taskMessage, setTaskMessage] = useState('');
@@ -22,12 +68,30 @@ export function App() {
   useEffect(() => {
     let isActive = true;
     void (async () => {
-      const result = await bridge.getSettings();
-      const list = await bridge.listHistory({ offset: 0, limit: 100 });
+      let result: SettingsResult;
+      let list: HistoryList;
+      try {
+        result = await bridge.getSettings();
+        list = await bridge.listHistory({ offset: 0, limit: 100 });
+      } catch {
+        if (!isActive) return;
+        setSettings(fallbackResult());
+        setHotkeyState({ ...defaultHotkeyState });
+        setHistoryItems([]);
+        setSettingsNotice('数据读取失败，已按默认设置启动。');
+        setIsLoading(false);
+        return;
+      }
       if (!isActive) return;
-      setSettings(result);
+      const isCorrupt = result.errorCode === 'settings_corrupt';
+      const effective = isCorrupt ? fallbackResult() : result;
+      setSettings(effective);
+      setHotkeyState(effective.hotkeyState);
       setHistoryItems(list.items);
       setIsLoading(false);
+      setSettingsNotice(
+        isCorrupt ? '设置文件损坏，已按默认设置启动。' : noticeFor(effective.settings)
+      );
     })();
     const unsubscribe = bridge.onTaskFinished((result) => {
       if (isActive) setTaskMessage(`任务 ${result.operationId}：${result.state}`);
@@ -39,15 +103,31 @@ export function App() {
   }, [bridge]);
 
   const handleSaveSettings = async (draft: SettingsDraft): Promise<SettingsResult> => {
-    const result = await bridge.saveSettings(draft);
-    if (!result.errorCode) setSettings(result);
-    return result;
+    try {
+      const result = await bridge.saveSettings(draft);
+      setHotkeyState(result.hotkeyState);
+      if (!result.errorCode) {
+        setSettings(result);
+        setSettingsNotice(noticeFor(result.settings));
+      }
+      return result;
+    } catch {
+      return currentOrFallback(settings, hotkeyState);
+    }
   };
 
   const handleResetSettings = async (): Promise<SettingsResult> => {
-    const result = await bridge.resetSettings();
-    if (!result.errorCode) setSettings(result);
-    return result;
+    try {
+      const result = await bridge.resetSettings();
+      setHotkeyState(result.hotkeyState);
+      if (!result.errorCode) {
+        setSettings(result);
+        setSettingsNotice(noticeFor(result.settings));
+      }
+      return result;
+    } catch {
+      return currentOrFallback(settings, hotkeyState);
+    }
   };
 
   const handleDelete = async (historyItemId: string): Promise<TaskResult> => {
@@ -105,7 +185,8 @@ export function App() {
           ) : (
             <SettingsPage
               settings={settings?.settings ?? null}
-              hotkeyState={settings?.hotkeyState ?? null}
+              hotkeyState={hotkeyState}
+              notice={settingsNotice}
               onSave={handleSaveSettings}
               onReset={handleResetSettings}
             />

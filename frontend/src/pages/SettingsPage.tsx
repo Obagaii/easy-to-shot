@@ -17,6 +17,7 @@ import type { HotkeyState, SettingsDraft, SettingsResult } from '../bridge';
 interface SettingsPageProps {
   settings: SettingsDraft | null;
   hotkeyState: HotkeyState | null;
+  notice: string;
   onSave: (draft: SettingsDraft) => Promise<SettingsResult>;
   onReset: () => Promise<SettingsResult>;
 }
@@ -45,6 +46,8 @@ const errorMessages: Record<string, string> = {
   invalid_draft: '设置草稿未通过校验。',
   hotkey_conflict: '热键已被占用，原设置仍然生效。',
   write_failed: '设置写入失败，原设置仍然生效。',
+  settings_unavailable: '设置服务暂不可用，请重试。',
+  settings_corrupt: '设置文件损坏，已按默认设置启动。',
   unexpected: '保存未完成，请重试。',
 };
 
@@ -109,7 +112,13 @@ function describeResult(action: string, result: SettingsResult): Feedback {
   };
 }
 
-export function SettingsPage({ settings, hotkeyState, onSave, onReset }: SettingsPageProps) {
+export function SettingsPage({
+  settings,
+  hotkeyState,
+  notice,
+  onSave,
+  onReset,
+}: SettingsPageProps) {
   const [draft, setDraft] = useState<SettingsDraft | null>(settings);
   const [feedback, setFeedback] = useState<Feedback>(initialFeedback);
   const [isResetOpen, setIsResetOpen] = useState(false);
@@ -186,6 +195,9 @@ export function SettingsPage({ settings, hotkeyState, onSave, onReset }: Setting
 
   return (
     <div className="settings-page">
+      {notice && (
+        <Alert className="settings-feedback" type="warning" showIcon message={notice} />
+      )}
       <div className="settings-toolbar">
         <Typography.Text type={isDirty ? 'warning' : 'secondary'}>
           {isDirty ? '草稿有未保存的修改' : '当前显示的是已保存设置'}
@@ -216,25 +228,32 @@ export function SettingsPage({ settings, hotkeyState, onSave, onReset }: Setting
 
         <Form.Item label="实际热键状态">
           {hotkeyState ? (
-            <Space>
-              <Tag
-                color={
-                  hotkeyState.conflict
-                    ? 'error'
+            <Space direction="vertical" size="small">
+              <Space>
+                <Tag
+                  color={
+                    hotkeyState.conflict
+                      ? 'error'
+                      : hotkeyState.registered
+                        ? 'success'
+                        : 'warning'
+                  }
+                >
+                  {hotkeyState.conflict
+                    ? '注册冲突'
                     : hotkeyState.registered
-                      ? 'success'
-                      : 'warning'
-                }
-              >
-                {hotkeyState.conflict
-                  ? '注册冲突'
-                  : hotkeyState.registered
-                    ? '已注册'
-                    : '未注册'}
-              </Tag>
-              <Typography.Text type="secondary">
-                实际生效：{hotkeyState.effectiveHotkey}
-              </Typography.Text>
+                      ? '已注册'
+                      : '未注册'}
+                </Tag>
+                <Typography.Text type="secondary">
+                  实际生效：{hotkeyState.effectiveHotkey}
+                </Typography.Text>
+              </Space>
+              {hotkeyState.conflict && (
+                <Typography.Text type="danger">
+                  草稿热键 {draft.hotkey} 未生效，原设置仍然可用。
+                </Typography.Text>
+              )}
             </Space>
           ) : (
             <Typography.Text type="secondary">正在读取实际热键状态…</Typography.Text>
