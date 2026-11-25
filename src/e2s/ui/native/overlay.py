@@ -22,10 +22,8 @@ from e2s.capture.geometry import (
 from e2s.capture.service import CaptureError
 from e2s.capture.session import CaptureSession
 from e2s.ui.native.canvas import AnnotationCanvas
-from e2s.ui.native.resize_handles import handle_positions, resize_cursor
+from e2s.ui.native.resize_handles import draw_resize_frame, handle_positions, resize_cursor
 
-_CAPTURE_ACCENT = QColor("#58dcfa")
-_CAPTURE_OUTLINE = QColor("#172b3d")
 _ARROW_STEPS = {
     Qt.Key.Key_Left: (-1, 0),
     Qt.Key.Key_Right: (1, 0),
@@ -115,50 +113,11 @@ class CaptureOverlay(QWidget):
         if selection is None:
             return
         rect = self._selection_on_screen(selection)
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(_CAPTURE_OUTLINE, 2.5))
-        painter.drawRect(rect)
-        painter.setPen(QPen(_CAPTURE_ACCENT, 1))
-        painter.drawRect(rect)
-        self._paint_resize_handles(painter, rect)
-        painter.restore()
+        active = self._drag.resize_handle if self._drag is not None else None
+        draw_resize_frame(painter, rect, QRectF(self.rect()), active)
         dimensions = f"{selection.width_px} × {selection.height_px} px"
         bottom = rect.top() - 8 if rect.top() >= 40 else rect.bottom() + 32
         self._draw_label(painter, dimensions, rect.left(), bottom)
-
-    def _paint_resize_handles(self, painter: QPainter, rect: QRectF) -> None:
-        active = self._drag.resize_handle if self._drag is not None else None
-        length = min(12, rect.width() / 4, rect.height() / 4)
-        viewport = QRectF(self.rect()).adjusted(4, 4, -4, -4)
-        for handle, center in handle_positions(rect):
-            horizontal, vertical = handle.value
-            # Keep the handles visible when the crop reaches an edge of the display.
-            point = QPointF(
-                min(viewport.right(), max(viewport.left(), center.x())),
-                min(viewport.bottom(), max(viewport.top(), center.y())),
-            )
-            color = QColor("#ffffff") if handle is active else _CAPTURE_ACCENT
-            if horizontal and vertical:
-                corner = QPainterPath(point + QPointF(-horizontal * length, 0))
-                corner.lineTo(point)
-                corner.lineTo(point + QPointF(0, -vertical * length))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                for stroke, width in ((_CAPTURE_OUTLINE, 6), (color, 3)):
-                    pen = QPen(
-                        stroke, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                        Qt.PenJoinStyle.RoundJoin,
-                    )
-                    painter.setPen(pen)
-                    painter.drawPath(corner)
-            else:
-                span = min(18, (rect.height() if horizontal else rect.width()) / 3)
-                width, height = (6, span) if horizontal else (span, 6)
-                grip = QRectF(point.x() - width / 2, point.y() - height / 2, width, height)
-                painter.setPen(QPen(_CAPTURE_OUTLINE, 1.5))
-                painter.setBrush(color)
-                painter.drawRoundedRect(grip, 3, 3)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is not self._canvas or not isinstance(event, QMouseEvent):

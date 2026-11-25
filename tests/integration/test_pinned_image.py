@@ -167,3 +167,23 @@ def test_pin_handle_stops_at_screen_edge_without_moving_anchor(app) -> None:
         assert abs(pin.geometry().center().y() - before.center().y()) <= 1
     finally:
         pin.close()
+
+
+def test_pin_renders_capture_frame_and_all_grips_without_hover(app) -> None:
+    image = QImage(124, 84, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("#3b7ba4"))
+    pin = PinnedImage(image)
+    try:
+        pin.resize(image.size())
+        preview = QImage(pin.size(), QImage.Format.Format_RGBA8888)
+        pin.render(preview)
+        cyan = QColor("#58dcfa")
+        assert preview.pixelColor(26, 1) == cyan
+        for x, y in ((4, 4), (62, 4), (120, 4), (120, 42),
+                     (120, 80), (62, 80), (4, 80), (4, 42)):
+            assert preview.pixelColor(x, y) == cyan
+        assert preview.pixelColor(13, 4) == preview.pixelColor(4, 13) == cyan
+        assert preview.pixelColor(10, 10) == image.pixelColor(10, 10)
+        assert preview.pixelColor(62, 42) == image.pixelColor(62, 42)
+    finally:
+        pin.close()

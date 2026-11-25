@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -14,21 +14,19 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPaintEvent,
     QPainter,
-    QPen,
     QScreen,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QMenu, QWidget
 
 from e2s.capture.geometry import ResizeHandle
-from e2s.ui.native.resize_handles import handle_positions, resize_cursor
+from e2s.ui.native.resize_handles import draw_resize_frame, frame_handle_positions, resize_cursor
 
 _MIN_VISIBLE_DIP = 24
 _MAX_SCALE = 4.0
 _WHEEL_STEP = 1.2
-_HANDLE_COLOR = QColor("#58dcfa")
-_HANDLE_OUTLINE = QColor("#172b3d")
-_HANDLE_HIT_DIP = 11
+_HANDLE_HIT_DIP = 15
+_FRAME_INSET_DIP = 1.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +59,6 @@ class PinnedImage(QWidget):
         self._scale = 1.0
         self._drag_offset: QPointF | None = None
         self._resize_drag: _ResizeDrag | None = None
-        self._show_handles = False
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
@@ -113,25 +110,13 @@ class PinnedImage(QWidget):
         painter.fillRect(event.rect(), QColor("#172b3d"))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.drawImage(self.rect(), self._image)
-        if self._show_handles or self._resize_drag is not None:
-            radius = self._handle_radius()
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QPen(_HANDLE_OUTLINE, min(1.5, radius / 2)))
-            painter.setBrush(_HANDLE_COLOR)
-            for _, center in self._handle_positions():
-                painter.drawEllipse(center, radius, radius)
+        active = self._resize_drag.handle if self._resize_drag is not None else None
+        draw_resize_frame(painter, self._frame_rect(), QRectF(self.rect()), active)
 
     def enterEvent(self, event: QEnterEvent) -> None:
-        self._show_handles = True
         if not self._is_dragging:
             self._update_cursor(event.position())
-        self.update()
         super().enterEvent(event)
-
-    def leaveEvent(self, event: QEvent) -> None:
-        self._show_handles = False
-        self.update()
-        super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -153,6 +138,7 @@ class PinnedImage(QWidget):
         else:
             self._drag_offset = position - QPointF(self.pos())
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        self.update()
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -160,6 +146,8 @@ class PinnedImage(QWidget):
             self._update_drag(event.globalPosition())
             event.accept()
         else:
+            if self._resize_drag is not None:
+                self.update()
             self._resize_drag = None
             self._drag_offset = None
             self._update_cursor(event.position())
@@ -231,19 +219,17 @@ class PinnedImage(QWidget):
         # QWidget.screen() can parent the PySide screen wrapper to this disposable window.
         return QGuiApplication.screenAt(position) or QGuiApplication.primaryScreen()
 
-    def _handle_radius(self) -> float:
-        return min(3.5, self.width() / 12, self.height() / 12)
-
-    def _handle_positions(self) -> tuple[tuple[ResizeHandle, QPointF], ...]:
-        inset = self._handle_radius() * 1.5
-        return handle_positions(QRectF(self.rect()).adjusted(inset, inset, -inset, -inset))
+    def _frame_rect(self) -> QRectF:
+        inset = min(_FRAME_INSET_DIP, self.width() / 4, self.height() / 4)
+        return QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
 
     def _handle_at(self, position: QPointF) -> ResizeHandle | None:
         def distance_squared(item: tuple[ResizeHandle, QPointF]) -> float:
             delta = position - item[1]
             return QPointF.dotProduct(delta, delta)
 
-        nearest = min(self._handle_positions(), key=distance_squared)
+        grips = frame_handle_positions(self._frame_rect(), QRectF(self.rect()))
+        nearest = min(grips, key=distance_squared)
         hit_radius = min(_HANDLE_HIT_DIP, self.width() / 3, self.height() / 3)
         return nearest[0] if distance_squared(nearest) <= hit_radius ** 2 else None
 
