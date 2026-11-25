@@ -3,24 +3,44 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QStandardPaths, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QKeySequence, QScreen
+from PIL import Image
+from PySide6.QtCore import (
+    QObject,
+    QPoint,
+    QSize,
+    QStandardPaths,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import QImage, QKeySequence, QScreen
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
+from e2s.capture.geometry import SelectionRect, move_selection
+from e2s.capture.qr import CodeDetection, scan_codes
 from e2s.capture.service import CaptureError, capture_frame
 from e2s.capture.session import CaptureSession, CaptureSource, OutputSnapshot
 from e2s.output.files import SaveResult, build_filename
 from e2s.output.ports import TaskResult, TaskState
-from e2s.platform.windows.displays import DisplayWatcher, screen_at_cursor
+from e2s.platform.windows.displays import (
+    DisplayWatcher,
+    screen_at_cursor,
+)
 from e2s.platform.windows.file_dialogs import choose_image_save_path
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, GlobalHotkey
+from e2s.platform.windows.window_capture import scroll_window_below
+from e2s.ui.native.live_capture import grab_region
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.pinned_image import PinnedImage
+from e2s.ui.native.region_recording import RegionRecording
+from e2s.ui.native.scrolling_capture import ScrollingCapture
 from e2s.ui.native.tray import Tray
 from e2s.ui.native.workbench import Workbench
 
-_OutputWindow = CaptureOverlay | PinnedImage
+_OutputWindow = CaptureOverlay | PinnedImage | ScrollingCapture
 _CAPTURE_SETTLE_MS = 100
 _SAVE_ERRORS = {
     "overwrite_not_confirmed": "目标文件已存在，请重新选择文件或确认覆盖。",
@@ -39,6 +59,7 @@ class AppController(QObject):
     snapshot_ready = Signal(object)
     output_succeeded = Signal(object, object, str)
     _save_finished = Signal(object)
+    _scan_finished = Signal(object, object, str)
 
     def __init__(self, app: QApplication, workbench: Workbench, tray: Tray) -> None:
         super().__init__()
@@ -50,12 +71,14 @@ class AppController(QObject):
         self._capture_source = CaptureSource.HOTKEY
         self._overlay: CaptureOverlay | None = None
         self._previous_window: WindowState | None = None
+        self._live_panel: RegionRecording | ScrollingCapture | None = None
         self._activate_after_capture = False
         self._is_closing = False
         self._pinned_images: set[PinnedImage] = set()
         self._pending_save: tuple[OutputSnapshot, _OutputWindow] | None = None
         self._save_pool = QThreadPool(self)
         self._save_finished.connect(self._on_save_finished, Qt.ConnectionType.QueuedConnection)
+        self._scan_finished.connect(self._on_scan_finished, Qt.ConnectionType.QueuedConnection)
 
         self._capture_timer = QTimer(self)
         self._capture_timer.setSingleShot(True)
@@ -111,7 +134,9 @@ class AppController(QObject):
         if self._is_closing:
             return
         if self._capture_screen is not None:
-            if self._overlay is not None:
+            if self._live_panel is not None:
+                self._live_panel.activateWindow()
+            elif self._overlay is not None:
                 self._overlay.reactivate()
             return
 
@@ -147,6 +172,7 @@ class AppController(QObject):
         self._overlay.copy_requested.connect(self._copy_snapshot)
         self._overlay.save_requested.connect(self._save_snapshot)
         self._overlay.pin_requested.connect(self._pin_snapshot)
+        self._overlay.action_requested.connect(self._run_capture_action)
         self._overlay.show_on_screen(self._capture_screen)
 
     @Slot(object)
@@ -164,11 +190,16 @@ class AppController(QObject):
         overlay, screen = self._overlay, self._capture_screen
         if overlay is None or screen is None:
             return
+        self._show_pin(snapshot, overlay, screen, overlay.selection_origin(snapshot.selection))
+
+    def _show_pin(
+        self, snapshot: OutputSnapshot, overlay: CaptureOverlay, screen: QScreen, origin: QPoint
+    ) -> bool:
         try:
             pin = PinnedImage(snapshot.to_image())
         except (MemoryError, ValueError):
             overlay.set_output_feedback("无法创建贴图，请缩小选区后重试。")
-            return
+            return False
 
         self._pinned_images.add(pin)
         pin.closed.connect(lambda: self._pinned_images.discard(pin))
@@ -178,9 +209,132 @@ class AppController(QObject):
         pin.save_requested.connect(
             lambda: self._save_output(replace(snapshot, operation_id=uuid4()), pin)
         )
-        pin.show_at(screen, overlay.selection_origin(snapshot.selection))
+        pin.show_at(screen, origin)
         result = TaskResult(str(snapshot.operation_id), TaskState.SUCCEEDED)
         self._complete_output(snapshot, result, "pin", overlay)
+        return True
+
+    @Slot(str, object)
+    def _run_capture_action(self, name: str, snapshot: OutputSnapshot) -> None:
+        overlay, screen = self._overlay, self._capture_screen
+        if overlay is None or screen is None:
+            return
+        if name == "barcode":
+            overlay.set_output_feedback("正在扫描二维码…", is_pending=True)
+            self._save_pool.start(lambda: self._scan_snapshot(overlay, snapshot))
+        elif name in ("scroll", "record"):
+            self._start_live_capture(name, snapshot, overlay, screen)
+
+    def _scan_snapshot(self, overlay: CaptureOverlay, snapshot: OutputSnapshot) -> None:
+        try:
+            detections = scan_codes(snapshot)
+        except (MemoryError, RuntimeError, ValueError):
+            self._scan_finished.emit(overlay, (), "扫描二维码失败，请重试。")
+        else:
+            message = "" if detections else "选区内未识别到二维码或条码。"
+            self._scan_finished.emit(overlay, detections, message)
+
+    @Slot(object, object, str)
+    def _on_scan_finished(
+        self, overlay: CaptureOverlay, detections: tuple[CodeDetection, ...], message: str
+    ) -> None:
+        if self._overlay is overlay:
+            overlay.set_output_feedback(message)
+            overlay.show_code_results(detections)
+
+    def _start_live_capture(
+        self, name: str, snapshot: OutputSnapshot, overlay: CaptureOverlay, screen: QScreen
+    ) -> None:
+        selection = snapshot.selection
+
+        def grab() -> QImage:
+            return grab_region(screen, selection)
+
+        if name == "scroll":
+            if min(selection.width_px, selection.height_px) < 24:
+                overlay.set_output_feedback("滚动截图区域至少需要 24 × 24 像素。")
+                return
+            window_id = int(overlay.winId())
+            source_width, source_height = overlay.capture_size_px()
+
+            def shifted_selection(offset: QPoint) -> SelectionRect:
+                dpi = screen.devicePixelRatio()
+                return move_selection(
+                    selection, round(offset.x() * dpi), round(offset.y() * dpi),
+                    source_width, source_height,
+                )
+
+            panel = ScrollingCapture(
+                lambda offset: grab_region(screen, shifted_selection(offset)),
+                lambda horizontal, offset: scroll_window_below(
+                    window_id, shifted_selection(offset), horizontal=horizontal
+                ),
+            )
+            panel.captured.connect(
+                lambda action, image: self._finish_scroll(
+                    action, snapshot, overlay, screen, panel, image
+                )
+            )
+        else:
+            if min(selection.width_px, selection.height_px) < 16:
+                overlay.set_output_feedback("录屏区域至少需要 16 × 16 像素。")
+                return
+            default_name = (self._pictures_directory() / build_filename(datetime.now())).with_suffix(
+                ".mp4"
+            )
+            try:
+                panel = RegionRecording(grab, default_name, QSize(selection.width_px, selection.height_px))
+            except OSError:
+                overlay.set_output_feedback("无法创建录屏临时文件。")
+                return
+            panel.completed.connect(lambda path: self._tray.notify(f"录屏已保存到 {path}"))
+
+        self._live_panel = panel
+        panel.finished.connect(lambda _result: self._close_live_panel(panel))
+        panel.failed.connect(lambda message: self._live_failed(panel, message))
+        region = overlay.selection_geometry(selection)
+        if not panel.present(screen, region):
+            self._live_failed(panel, "没有可放置控制窗口的区域，请缩小截图选区。")
+            return
+        overlay.hide()
+        QTimer.singleShot(_CAPTURE_SETTLE_MS, panel, panel.start)
+
+    def _finish_scroll(
+        self, action: str, snapshot: OutputSnapshot, overlay: CaptureOverlay, screen: QScreen,
+        panel: ScrollingCapture, image: Image.Image,
+    ) -> None:
+        if self._live_panel is not panel or self._overlay is not overlay:
+            return
+        try:
+            result = replace(
+                snapshot, selection=SelectionRect(0, 0, image.width, image.height),
+                rgba_pixels=image.tobytes(),
+            )
+        except MemoryError:
+            panel.set_output_feedback("内存不足，无法生成长截图。")
+            return
+        if action == "copy":
+            self._copy_output(result, panel)
+        elif action == "save":
+            self._save_output(result, panel)
+        elif action == "pin" and not self._show_pin(result, overlay, screen, panel.selection_origin):
+            panel.set_output_feedback("无法打开长截图贴图。")
+
+    def _live_failed(self, panel: RegionRecording | ScrollingCapture, message: str) -> None:
+        panel.reject()
+        if self._overlay is not None:
+            self._overlay.set_output_feedback(message)
+
+    def _close_live_panel(self, panel: RegionRecording | ScrollingCapture) -> None:
+        if self._live_panel is panel:
+            self._live_panel = None
+            if self._overlay is not None and self._capture_screen is not None:
+                if panel.result() == panel.DialogCode.Accepted:
+                    self._finish_capture()
+                else:
+                    self._overlay.show_on_screen(self._capture_screen)
+        panel.deleteLater()
+
 
     def _copy_output(self, snapshot: OutputSnapshot, window: _OutputWindow) -> None:
         if not self._has_output_window(window):
@@ -198,7 +352,7 @@ class AppController(QObject):
         if not self._has_output_window(window):
             return
         if self._pending_save is not None:
-            self._set_output_feedback(window, "正在保存上一张截图，请稍后重试。")
+            self._set_output_feedback(window, "正在保存上一张截图，请稍后重试。", is_pending=False)
             return
 
         self._pending_save = (snapshot, window)
@@ -219,8 +373,7 @@ class AppController(QObject):
                 self._set_output_feedback(window, "", is_pending=False)
 
     def _choose_save_target(self, window: _OutputWindow) -> tuple[Path | None, bool]:
-        pictures = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
-        default_directory = Path(pictures) if pictures else Path.home()
+        default_directory = self._pictures_directory()
         output_directory = default_directory / "EasyToShot"
         if not output_directory.is_dir():
             output_directory = default_directory
@@ -241,6 +394,11 @@ class AppController(QObject):
             return target, True
         return None, False
 
+    @staticmethod
+    def _pictures_directory() -> Path:
+        pictures = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        return Path(pictures) if pictures else Path.home()
+
     def _write_snapshot(
         self, snapshot: OutputSnapshot, target: Path, is_overwrite_confirmed: bool
     ) -> None:
@@ -260,18 +418,22 @@ class AppController(QObject):
         if result.state is TaskState.SUCCEEDED:
             self._set_output_feedback(window, "", is_pending=False)
             self._complete_output(snapshot, result, "save", window)
+            if result.path is not None and not self._is_closing:
+                self._tray.notify(f"截图已保存到 {result.path}")
         else:
             message = _SAVE_ERRORS.get(result.error_code, "无法保存截图，请重试。")
             self._set_output_feedback(window, message, is_pending=False)
 
     def _has_output_window(self, window: _OutputWindow) -> bool:
-        return not self._is_closing and (window is self._overlay or window in self._pinned_images)
+        return not self._is_closing and (
+            window is self._overlay or window is self._live_panel or window in self._pinned_images
+        )
 
     def _set_output_feedback(
         self, window: _OutputWindow, message: str, *, is_pending: bool | None = None
     ) -> None:
         if self._has_output_window(window):
-            if isinstance(window, CaptureOverlay):
+            if isinstance(window, (CaptureOverlay, ScrollingCapture)):
                 window.set_output_feedback(message, is_pending=bool(is_pending))
                 return
             if is_pending is not None:
@@ -286,8 +448,8 @@ class AppController(QObject):
         source: str,
         window: _OutputWindow,
     ) -> None:
-        if isinstance(window, CaptureOverlay):
-            if self._overlay is window:
+        if isinstance(window, (CaptureOverlay, ScrollingCapture)):
+            if self._overlay is window or self._live_panel is window:
                 self._finish_capture()
             self.snapshot_ready.emit(snapshot)
         # History can subscribe with HistoryService.record_success on a worker queue.
@@ -312,6 +474,10 @@ class AppController(QObject):
     def _finish_capture(self) -> None:
         self._capture_timer.stop()
         self._capture_screen = None
+        if self._live_panel is not None:
+            panel, self._live_panel = self._live_panel, None
+            if panel.isVisible():
+                panel.reject()
         if self._overlay is not None:
             self._overlay.hide()
             self._overlay.deleteLater()

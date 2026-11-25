@@ -2,7 +2,7 @@ import pytest
 from PySide6.QtGui import QColor, QImage
 
 from e2s.annotation.document import AnnotationDocument
-from e2s.annotation.elements import Mosaic, Stroke, Text, Tool
+from e2s.annotation.elements import Stroke, Text, Tool, WatermarkStyle
 from e2s.annotation.renderer import hit_test, render_annotations
 from e2s.annotation.resize import ElementResize, resize_bounds
 from e2s.capture.geometry import ResizeHandle
@@ -51,78 +51,38 @@ def test_outlines_hit_the_stroke_and_filled_shapes_hit_the_center(tool: Tool) ->
     assert hit_test((filled,), (20, 20), 0) == 0
 
 
-def test_lines_arrow_wings_and_freehand_use_source_pixel_width() -> None:
+def test_arrow_and_freehand_use_source_pixel_width() -> None:
     source = image_with_color(90, 90, "#ffffff")
-    line = Stroke(Tool.LINE, ((10, 20), (50, 20)), "#ff0000", 4)
     arrow = Stroke(Tool.ARROW, ((10, 40), (50, 40)), "#ff0000", 4)
     pen = Stroke(Tool.PEN, ((10, 50), (20, 60), (50, 60)), "#ff0000", 4)
     dot = Stroke(Tool.PEN, ((60, 70),), "#0000ff", 4)
-    merged = render_annotations(source, (line, arrow, pen, dot))
+    merged = render_annotations(source, (arrow, pen, dot))
 
     red = QColor("#ff0000")
     white = QColor("#ffffff")
-    assert merged.pixelColor(25, 18) == red
-    assert merged.pixelColor(25, 21) == red
-    assert merged.pixelColor(25, 22) == white
-    assert merged.pixelColor(39, 45) == red
+    assert merged.pixelColor(25, 39) == red
+    assert merged.pixelColor(25, 43) == white
     assert merged.pixelColor(25, 59) == red
     assert merged.pixelColor(40, 70) == white
     assert merged.pixelColor(60, 70) == QColor("#0000ff")
-    assert hit_test((arrow,), (39, 45), 0) == 0
+    assert hit_test((arrow,), (44, 42), 0) == 0
     assert hit_test((pen,), (15, 55), 0) == 0
     assert hit_test((dot,), (60, 70), 0) == 0
 
 
-def test_overlapping_mosaics_average_visible_edge_blocks_and_keep_fixed_phase() -> None:
-    source = image_with_color(7, 4, "#000000")
-    for x, shade in enumerate(range(0, 241, 40)):
-        for y in range(source.height()):
-            source.setPixelColor(x, y, QColor(shade, shade, shade))
-    first = Mosaic((-1, 0), (6, 3), 3)
-    second = Mosaic((1, 0), (7, 3), 3)
-    initial = render_annotations(source, (first,))
-    combined = render_annotations(source, (first, second))
-    assert [initial.pixelColor(x, 0).red() for x in range(7)] == [20, 20, 120, 120, 120, 200, 240]
-    assert [combined.pixelColor(x, 0).red() for x in range(7)] == [20, 87, 87, 87, 187, 187, 187]
-    assert [combined.pixelColor(x, 3).red() for x in range(7)] == list(range(0, 241, 40))
-
-
-def test_mosaic_processes_only_lower_layers_and_undo_restores_original_pixels() -> None:
-    source = image_with_color(12, 12, "#ffffff")
-    document = AnnotationDocument(source)
-    document.add(Stroke(Tool.RECTANGLE, ((0, 0), (4, 12)), "#ff0000", 2, True))
-    unmosaiced = render_annotations(source, document.elements)
-    document.add(Mosaic((0, 0), (8, 8), 8))
-    document.add(Stroke(Tool.RECTANGLE, ((1, 1), (3, 3)), "#0000ff", 2, True))
-    layered = render_annotations(source, document.elements)
-    assert layered.pixelColor(1, 1) == QColor("#0000ff")
-    assert layered.pixelColor(4, 4) == QColor("#ff8080")
-    assert layered.pixelColor(8, 4) == QColor("#ffffff")
-    document.undo()
-    document.undo()
-    assert render_annotations(source, document.elements) == unmosaiced
-    document.redo()
-    document.redo()
-    assert render_annotations(source, document.elements) == layered
-
-
-def test_recropping_keeps_mosaic_blocks_aligned_to_the_frozen_frame() -> None:
-    source = image_with_color(12, 4, "#000000")
-    for x in range(source.width()):
-        for y in range(source.height()):
-            source.setPixelColor(x, y, QColor(x * 10, x * 10, x * 10))
-    mosaic = Mosaic((2, 0), (10, 4), 4)
-    document = AnnotationDocument(source.copy(0, 0, 10, 4))
-    document.add(mosaic)
-    document.set_source(source.copy(4, 0, 8, 4), (4, 0))
+def test_recropping_keeps_annotations_aligned_to_the_frozen_frame() -> None:
+    source = image_with_color(30, 20, "#ffffff")
+    rectangle = Stroke(Tool.RECTANGLE, ((4, 3), (16, 16)), "#ff0000", 2, True)
+    document = AnnotationDocument(source.copy(0, 0, 20, 20))
+    document.add(rectangle)
+    document.set_source(source.copy(10, 2, 20, 18), (10, 2))
     rendered = render_annotations(document.source, document.elements, document.origin_px)
-    assert [rendered.pixelColor(x, 0).red() for x in range(8)] == [
-        45, 45, 75, 75, 75, 75, 100, 110
-    ]
+    assert rendered.pixelColor(0, 3) == QColor("#ff0000")
+    assert rendered.pixelColor(14, 3) == QColor("#ffffff")
     document.undo()
-    assert document.elements == ()
+    assert not document.elements
     document.redo()
-    assert document.elements == (mosaic,)
+    assert document.elements == (rectangle,)
 
 
 @pytest.mark.parametrize(
@@ -136,7 +96,6 @@ def test_recropping_keeps_mosaic_blocks_aligned_to_the_frozen_frame() -> None:
             Stroke(Tool.PEN, ((10, 20), (15, 30), (30, 25)), "#ff0000", 3),
             Stroke(Tool.PEN, ((10, 20), (20, 40), (50, 30)), "#ff0000", 3),
         ),
-        (Mosaic((30, 30), (10, 20), 6), Mosaic((50, 40), (10, 20), 6)),
     ],
 )
 def test_box_resize_keeps_the_opposite_corner_and_source_pixel_style(element, expected) -> None:
@@ -167,3 +126,31 @@ def test_multiline_text_renders_in_each_line_and_restores_when_undone(app) -> No
     assert render_annotations(source, document.elements) != rendered
     document.undo()
     assert render_annotations(source, document.elements) == rendered
+
+
+def test_erasers_restore_the_frozen_background_and_redo_restores_the_mask() -> None:
+    source = image_with_color(64, 64, "#1e90ff")
+    document = AnnotationDocument(source)
+    document.add(Stroke(Tool.RECTANGLE, ((5, 5), (59, 59)), "#ff0000", 2, True))
+    document.add(Stroke(Tool.BRUSH_ERASER, ((12, 20), (45, 20)), "#ffffff", 8))
+    document.add(Stroke(Tool.RECT_ERASER, ((40, 40), (20, 28)), "#ffffff", 1))
+    result = render_annotations(source, document.elements)
+    assert result.pixelColor(25, 20) == source.pixelColor(25, 20)
+    assert result.pixelColor(30, 31) == source.pixelColor(30, 31)
+    assert result.pixelColor(15, 31) == QColor("#ff0000")
+    assert hit_test(document.elements, (25, 20), 0) is None
+    document.undo()
+    assert render_annotations(source, document.elements).pixelColor(30, 31) == QColor("#ff0000")
+    document.redo()
+    assert render_annotations(source, document.elements) == result
+
+
+def test_watermark_repeats_across_crop_and_respects_opacity(app) -> None:
+    source = image_with_color(220, 160, "#ffffff")
+    style = WatermarkStyle("TEST", angle=-30, gap_px=12, opacity=55)
+    mark = Text((0, 0), "", "#000000", 24, Tool.WATERMARK, watermark=style)
+    result = render_annotations(source, (mark,), (70, 90))
+    assert result.copy(0, 0, 110, 80) != source.copy(0, 0, 110, 80)
+    assert result.copy(110, 80, 110, 80) != source.copy(110, 80, 110, 80)
+    hidden = Text((0, 0), "", "#000000", 24, Tool.WATERMARK, watermark=WatermarkStyle("TEST", opacity=0))
+    assert render_annotations(source, (hidden,), (70, 90)) == source

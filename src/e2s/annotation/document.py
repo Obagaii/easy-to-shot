@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from PySide6.QtGui import QImage
 
-from e2s.annotation.elements import Element
+from e2s.annotation.elements import MASK_TOOLS, Element, Tool
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,8 +27,8 @@ class AnnotationDocument:
     def __init__(self, source: QImage, origin_px: tuple[int, int] = (0, 0)) -> None:
         self.set_source(source, origin_px)
         self._elements: list[Element] = []
-        self._past: list[Edit] = []
-        self._future: list[Edit] = []
+        self._past: list[tuple[Edit, ...]] = []
+        self._future: list[tuple[Edit, ...]] = []
         self._revision = 0
 
     @property
@@ -62,34 +62,70 @@ class AnnotationDocument:
         return bool(self._future)
 
     def add(self, element: Element) -> int:
-        index = len(self._elements)
-        self._record(Edit(index, None, element))
-        return index
+        return self.add_many((element,))[0]
+
+    def add_many(self, elements: tuple[Element, ...]) -> tuple[int, ...]:
+        edits = tuple(Edit(index, None, element)
+                      for index, element in enumerate(elements, start=len(self._elements)))
+        if edits:
+            self._record(*edits)
+        return tuple(edit.index for edit in edits)
 
     def replace(self, index: int, element: Element) -> None:
-        previous = self._elements[index]
-        if previous != element:
-            self._record(Edit(index, previous, element))
+        self.replace_many({index: element})
+
+    def replace_many(self, replacements: dict[int, Element]) -> None:
+        edits = tuple(
+            Edit(index, self._elements[index], element)
+            for index, element in replacements.items() if self._elements[index] != element
+        )
+        if edits:
+            self._record(*edits)
 
     def delete(self, index: int) -> None:
-        self._record(Edit(index, self._elements[index], None))
+        self.delete_many({index})
+
+    def delete_many(self, indexes: set[int]) -> None:
+        if indexes:
+            self._record(*(Edit(i, self._elements[i], None) for i in sorted(indexes, reverse=True)))
+
+    def move_layers(self, indexes: set[int], action: str) -> set[int]:
+        occupied = [
+            index for index, element in enumerate(self._elements)
+            if element.tool not in (*MASK_TOOLS, Tool.WATERMARK)
+        ]
+        order = occupied.copy()
+        if action in ("top", "bottom"):
+            order.sort(key=lambda index: (index in indexes) == (action == "top"))
+        else:
+            direction = 1 if action == "raise" else -1
+            positions = range(len(order) - 2, -1, -1) if direction > 0 else range(1, len(order))
+            for i in positions:
+                other = i + direction
+                if order[i] in indexes and order[other] not in indexes:
+                    order[i], order[other] = order[other], order[i]
+        self.replace_many({i: self._elements[old] for i, old in zip(occupied, order, strict=True)})
+        return {i for i, old in zip(occupied, order, strict=True) if old in indexes}
 
     def undo(self) -> None:
         if self._past:
-            edit = self._past.pop()
-            edit.apply(self._elements, reverse=True)
-            self._future.append(edit)
+            edits = self._past.pop()
+            for edit in reversed(edits):
+                edit.apply(self._elements, reverse=True)
+            self._future.append(edits)
             self._revision += 1
 
     def redo(self) -> None:
         if self._future:
-            edit = self._future.pop()
-            edit.apply(self._elements)
-            self._past.append(edit)
+            edits = self._future.pop()
+            for edit in edits:
+                edit.apply(self._elements)
+            self._past.append(edits)
             self._revision += 1
 
-    def _record(self, edit: Edit) -> None:
-        edit.apply(self._elements)
-        self._past.append(edit)
+    def _record(self, *edits: Edit) -> None:
+        for edit in edits:
+            edit.apply(self._elements)
+        self._past.append(edits)
         self._future.clear()
         self._revision += 1
