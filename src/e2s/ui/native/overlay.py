@@ -1,12 +1,14 @@
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, Signal
+from collections.abc import Callable
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import (
-    QColor,
     QCloseEvent,
+    QColor,
     QKeyEvent,
     QMouseEvent,
-    QPaintEvent,
     QPainter,
     QPainterPath,
+    QPaintEvent,
     QPen,
     QScreen,
 )
@@ -19,18 +21,26 @@ from e2s.capture.geometry import (
     SelectionRect,
     move_selection,
 )
+from e2s.capture.qr import CodeDetection
 from e2s.capture.service import CaptureError
-from e2s.capture.session import CaptureSession
+from e2s.capture.session import CaptureSession, OutputSnapshot
 from e2s.ui.native.canvas import AnnotationCanvas
-from e2s.ui.native.resize_handles import handle_positions, resize_cursor
+from e2s.ui.native.qr_results import QrResults
+from e2s.ui.native.resize_handles import (
+    draw_resize_frame,
+    handle_positions,
+    resize_cursor,
+)
 
-_CAPTURE_ACCENT = QColor("#58dcfa")
-_CAPTURE_OUTLINE = QColor("#172b3d")
 _ARROW_STEPS = {
     Qt.Key.Key_Left: (-1, 0),
     Qt.Key.Key_Right: (1, 0),
     Qt.Key.Key_Up: (0, -1),
     Qt.Key.Key_Down: (0, 1),
+    Qt.Key.Key_A: (-1, 0),
+    Qt.Key.Key_D: (1, 0),
+    Qt.Key.Key_W: (0, -1),
+    Qt.Key.Key_S: (0, 1),
 }
 _HANDLE_HIT_DIP = 12
 _BORDER_HIT_DIP = 4
@@ -40,6 +50,8 @@ class CaptureOverlay(QWidget):
     cancelled = Signal()
     copy_requested = Signal(object)
     save_requested = Signal(object)
+    pin_requested = Signal(object)
+    action_requested = Signal(str, object)
 
     def __init__(self, session: CaptureSession) -> None:
         super().__init__(
@@ -49,6 +61,7 @@ class CaptureOverlay(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self._session = session
+        self._qr_results = QrResults(self)
         self._frame = session.frame
         rect = self._frame.geometry_dip
         self._coordinates = ScreenCoordinates(
@@ -71,6 +84,17 @@ class CaptureOverlay(QWidget):
         self.showFullScreen()
         self.reactivate()
 
+    def selection_origin(self, selection: SelectionRect) -> QPoint:
+        """Return the global Qt desktop position of the selection's top-left pixel."""
+        return self.mapToGlobal(self._selection_on_screen(selection).topLeft().toPoint())
+
+    def capture_size_px(self) -> tuple[int, int]:
+        return self._frame.width_px, self._frame.height_px
+
+    def selection_geometry(self, selection: SelectionRect) -> QRect:
+        rect = self._selection_on_screen(selection).toAlignedRect()
+        return QRect(self.mapToGlobal(rect.topLeft()), rect.size())
+
     def reactivate(self) -> None:
         self.raise_()
         self.activateWindow()
@@ -85,6 +109,11 @@ class CaptureOverlay(QWidget):
             self._canvas.set_feedback(message)
             if not is_pending:
                 self._canvas.focus_input()
+
+    def show_code_results(self, detections: tuple[CodeDetection, ...]) -> None:
+        selection = self._session.selection
+        if selection is not None:
+            self._qr_results.show(detections, self._selection_on_screen(selection))
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
@@ -110,53 +139,19 @@ class CaptureOverlay(QWidget):
         if selection is None:
             return
         rect = self._selection_on_screen(selection)
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(_CAPTURE_OUTLINE, 2.5))
-        painter.drawRect(rect)
-        painter.setPen(QPen(_CAPTURE_ACCENT, 1))
-        painter.drawRect(rect)
-        self._paint_resize_handles(painter, rect)
-        painter.restore()
+        active = self._drag.resize_handle if self._drag is not None else None
+        draw_resize_frame(painter, rect, QRectF(self.rect()), active)
         dimensions = f"{selection.width_px} × {selection.height_px} px"
         bottom = rect.top() - 8 if rect.top() >= 40 else rect.bottom() + 32
         self._draw_label(painter, dimensions, rect.left(), bottom)
 
-    def _paint_resize_handles(self, painter: QPainter, rect: QRectF) -> None:
-        active = self._drag.resize_handle if self._drag is not None else None
-        length = min(12, rect.width() / 4, rect.height() / 4)
-        viewport = QRectF(self.rect()).adjusted(4, 4, -4, -4)
-        for handle, center in handle_positions(rect):
-            horizontal, vertical = handle.value
-            # Keep the handles visible when the crop reaches an edge of the display.
-            point = QPointF(
-                min(viewport.right(), max(viewport.left(), center.x())),
-                min(viewport.bottom(), max(viewport.top(), center.y())),
-            )
-            color = QColor("#ffffff") if handle is active else _CAPTURE_ACCENT
-            if horizontal and vertical:
-                corner = QPainterPath(point + QPointF(-horizontal * length, 0))
-                corner.lineTo(point)
-                corner.lineTo(point + QPointF(0, -vertical * length))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                for stroke, width in ((_CAPTURE_OUTLINE, 6), (color, 3)):
-                    pen = QPen(
-                        stroke, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                        Qt.PenJoinStyle.RoundJoin,
-                    )
-                    painter.setPen(pen)
-                    painter.drawPath(corner)
-            else:
-                span = min(18, (rect.height() if horizontal else rect.width()) / 3)
-                width, height = (6, span) if horizontal else (span, 6)
-                grip = QRectF(point.x() - width / 2, point.y() - height / 2, width, height)
-                painter.setPen(QPen(_CAPTURE_OUTLINE, 1.5))
-                painter.setBrush(color)
-                painter.drawRoundedRect(grip, 3, 3)
-
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is not self._canvas or not isinstance(event, QMouseEvent):
+        if watched is self._canvas and event.type() == QEvent.Type.MouseButtonPress:
+            self._qr_results.clear()
+        if (
+            watched is not self._canvas or not isinstance(event, QMouseEvent)
+            or self._canvas.is_sampling_color
+        ):
             return super().eventFilter(watched, event)
 
         kind = event.type()
@@ -217,6 +212,7 @@ class CaptureOverlay(QWidget):
             event.accept()
         elif (
             key in _ARROW_STEPS
+            and event.modifiers() in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier)
             and self._session.selection is not None
             and (self._canvas is None or self._canvas.can_adjust_selection)
         ):
@@ -233,6 +229,8 @@ class CaptureOverlay(QWidget):
 
     def _set_selection(self, selection: SelectionRect) -> None:
         previous = self._session.selection
+        if previous != selection:
+            self._qr_results.clear()
         try:
             self._session.set_selection(selection)
             if self._canvas is None:
@@ -252,16 +250,28 @@ class CaptureOverlay(QWidget):
             self._selection_on_screen(selection),
             self,
             draw_selection_frame=self._paint_selection_frame,
+            sample_screen_color=self._sample_screen_color,
         )
         self._canvas = canvas
         canvas.installEventFilter(self)
         canvas.cancelled.connect(self.close)
-        canvas.copy_requested.connect(lambda: self._request_output(is_save=False))
-        canvas.save_requested.connect(lambda: self._request_output(is_save=True))
+        canvas.copy_requested.connect(lambda: self._request_output(self.copy_requested.emit))
+        canvas.save_requested.connect(lambda: self._request_output(self.save_requested.emit))
+        canvas.pin_requested.connect(lambda: self._request_output(self.pin_requested.emit))
+        canvas.output_requested.connect(
+            lambda name: self._request_output(lambda image: self.action_requested.emit(name, image))
+        )
         canvas.setGeometry(self.rect())
         canvas.show()
 
-    def _request_output(self, *, is_save: bool) -> None:
+    def _sample_screen_color(self, position: QPointF) -> QColor:
+        x, y = self._source_position(position)
+        return self._frame.image.pixelColor(
+            max(0, min(self._frame.width_px - 1, int(x))),
+            max(0, min(self._frame.height_px - 1, int(y))),
+        )
+
+    def _request_output(self, requested: Callable[[OutputSnapshot], None]) -> None:
         if self._drag is not None:
             return
         try:
@@ -271,7 +281,7 @@ class CaptureOverlay(QWidget):
                 str(error) if isinstance(error, CaptureError) else "内存不足，无法生成截图。"
             )
             return
-        (self.save_requested if is_save else self.copy_requested).emit(snapshot)
+        requested(snapshot)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.cancelled.emit()

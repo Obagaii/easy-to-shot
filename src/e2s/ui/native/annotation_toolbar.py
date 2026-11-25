@@ -1,181 +1,197 @@
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QButtonGroup,
-    QCheckBox,
-    QFrame,
-    QHBoxLayout,
+from collections.abc import Callable
+from dataclasses import dataclass
 
-    QToolButton,
-    QVBoxLayout,
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QVBoxLayout, QWidget
+
+from e2s.annotation.elements import ERASER_TOOLS, HIGHLIGHT_TOOLS, Tool
+from e2s.ui.native.annotation_controls import (
+    CAPTURE_CONTROLS_STYLE,
+    PanelPosition,
+    describe_control,
 )
+from e2s.ui.native.toolbar_icons import toolbar_icon
 
-from e2s.annotation.elements import MAX_FONT_SIZE_PX, MAX_STROKE_WIDTH_PX, MIN_FONT_SIZE_PX, Tool
-from e2s.ui.native.annotation_controls import ColorControl, SizeControl
 
-_TOOLS = {
-    Tool.SELECT: "选择",
-    Tool.RECTANGLE: "矩形",
-    Tool.ELLIPSE: "椭圆",
-    Tool.LINE: "直线",
-    Tool.ARROW: "箭头",
-    Tool.PEN: "画笔",
-    Tool.TEXT: "文字",
-    Tool.MOSAIC: "马赛克",
+@dataclass(frozen=True, slots=True)
+class Command:
+    label: str
+    keys: tuple[str, ...]
+
+
+_TOOL_COMMANDS = {
+    Tool.MOVE: Command("移动", ("M", "Ctrl+E")),
+    Tool.SELECT: Command("选择", ("V",)),
+    Tool.RECTANGLE: Command("矩形", ("1",)),
+    Tool.ELLIPSE: Command("椭圆", ("Shift+1",)),
+    Tool.ARROW: Command("箭头", ("2",)),
+    Tool.PEN: Command("画笔", ("3", "P")),
+    Tool.TEXT: Command("文字", ("5", "T")),
+    Tool.WATERMARK: Command("水印", ("9",)),
+    Tool.RECT_HIGHLIGHT: Command("高亮", ("4", "H")),
+    Tool.ERASER: Command("橡皮擦", ("8", "E")),
 }
+_ACTION_COMMANDS = {
+    "undo": Command("撤销", ("Ctrl+Z",)),
+    "redo": Command("重做", ("Ctrl+Y",)),
+    "barcode": Command("扫描二维码", ("Ctrl+Q",)),
+    "record": Command("录像", ("Ctrl+R",)),
+    "pin": Command("固定到屏幕", ("Ctrl+F",)),
+    "scroll": Command("滚动截图", ("L",)),
+    "save": Command("保存为文件", ("Ctrl+S",)),
+    "cancel": Command("取消", ("Esc",)),
+    "copy": Command("复制到剪贴板", ("Ctrl+C", "Enter")),
+}
+_GROUPS = (
+    (Tool.MOVE, Tool.SELECT),
+    (Tool.RECTANGLE, Tool.ELLIPSE, Tool.ARROW, Tool.PEN, Tool.TEXT, Tool.WATERMARK,
+     Tool.RECT_HIGHLIGHT, Tool.ERASER),
+    ("undo", "redo"),
+    ("barcode", "record", "pin", "scroll", "save"),
+    ("cancel", "copy"),
+)
+_FAMILIES = (HIGHLIGHT_TOOLS, ERASER_TOOLS)
+_PRIMARY = {tool: group[0] for group in _FAMILIES for tool in group}
 
-_FILL_TOOLS = (Tool.RECTANGLE, Tool.ELLIPSE)
+_BUTTON_SIZE = 38
+_MARGINS = 7
+_BUTTON_GAP = 4
+_SEPARATOR_WIDTH = 8
+
+
+def describe_button(button: QToolButton, command: Command) -> None:
+    hint = f"{command.label}（{' / '.join(command.keys)}）"
+    describe_control(button, hint)
+    button.setAccessibleName(command.label)
+    button.setAccessibleDescription(hint)
 
 
 class AnnotationToolbar(QFrame):
     tool_changed = Signal(object)
-    text_style_changed = Signal()
-    undo_requested = Signal()
-    redo_requested = Signal()
-    delete_requested = Signal()
-    copy_requested = Signal()
-    save_requested = Signal()
-    text_accepted = Signal()
-    text_cancelled = Signal()
+    action_requested = Signal(str)
 
-    def __init__(self, parent) -> None:
+    def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setObjectName("annotationToolbar")
-        self.setStyleSheet(
-            """
-            QFrame#annotationToolbar {
-                background: #f4f6f9; border: 1px solid #9aa8b7; border-radius: 8px;
-            }
-            QToolButton {
-                color: #182534; background: transparent;
-                border: 1px solid transparent; border-radius: 4px; padding: 4px 6px;
-            }
-            QToolButton:hover { background: #e4ecf6; }
-            QToolButton:checked, QToolButton#copyAnnotation:enabled { background: #cee2fc; }
-            QToolButton:focus { border-color: #547db0; }
-            QToolButton:disabled { color: #697787; }
-            QToolButton#annotationColor, QFrame#annotationSize {
-                background: #ffffff; border: 1px solid #cfdae7; border-radius: 6px;
-            }
-            QToolButton#annotationColor:hover { background: #e4ecf6; }
-            QToolButton#annotationColor:focus { border-color: #547db0; }
-            QToolButton#annotationColor::menu-indicator { image: none; width: 0; }
-            QMenu#annotationPalette {
-                color: #182534; background: #ffffff; border: 1px solid #cfdae7; padding: 4px;
-            }
-            QMenu#annotationPalette::item { padding: 5px 10px 5px 26px; }
-            QMenu#annotationPalette::item:selected { background: #e4ecf6; }
-            QFrame#annotationSize QLabel { color: #43566f; background: transparent; }
-            QSpinBox#annotationSizeValue {
-                color: #182534; background: #f4f6f9;
-                border: 1px solid transparent; border-radius: 4px; padding: 1px 0;
-            }
-            QSpinBox#annotationSizeValue:focus { border-color: #547db0; }
-            QToolButton#annotationStep { padding: 0; font-weight: bold; }
-            QToolButton#annotationDelete:enabled { color: #a8313e; }
-            QToolButton#annotationDelete:enabled:hover { background: #fde9eb; }
-            QCheckBox { color: #182534; background: transparent; }
-            """
-        )
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(7, 5, 7, 5)
-        layout.setSpacing(3)
-        tools = QHBoxLayout()
-        options = QHBoxLayout()
-        tools.setSpacing(3)
-        options.setSpacing(5)
-        layout.addLayout(tools)
-        layout.addLayout(options)
-        self._tools = QButtonGroup(self)
-        self._buttons = {}
-        for tool, label in _TOOLS.items():
-            button = self._add_button(tools, label)
-            button.setCheckable(True)
-            self._tools.addButton(button)
-            button.clicked.connect(lambda checked, tool=tool: self.tool_changed.emit(tool))
-            self._buttons[tool] = button
-        tools.addStretch(1)
-        self._undo = self._add_button(tools, "撤销", self.undo_requested, "Ctrl+Z")
-        self._redo = self._add_button(tools, "重做", self.redo_requested, "Ctrl+Shift+Z")
-        self._delete = self._add_button(tools, "删除", self.delete_requested, "Delete")
-        self._delete.setObjectName("annotationDelete")
-        self._delete.setEnabled(False)
+        self.setProperty("toolbarSurface", True)
+        self.setAccessibleName("截图工具栏")
+        self.setStyleSheet(CAPTURE_CONTROLS_STYLE)
+        self._rows = QVBoxLayout(self)
+        self._rows.setContentsMargins(_MARGINS, 5, _MARGINS, 5)
+        self._rows.setSpacing(2)
 
-        self._color = ColorControl(self)
-        self._color.color_changed.connect(self.text_style_changed)
-        options.addWidget(self._color)
-
-        self._width = SizeControl("笔宽", 1, MAX_STROKE_WIDTH_PX, 4, self)
-        self._font_size = SizeControl("字号", MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX, 24, self)
-        self._font_size.value_changed.connect(self.text_style_changed)
-        self._block_size = SizeControl("块大小", 2, 96, 12, self)
-        for field in (self._width, self._font_size, self._block_size):
-            options.addWidget(field)
-        self._fill = QCheckBox("填充", self)
-        options.addWidget(self._fill)
-        options.addStretch(1)
-        self._text_accept = self._add_button(options, "完成文字", self.text_accepted, "Ctrl+Enter")
-        self._text_cancel = self._add_button(options, "取消文字", self.text_cancelled, "Esc")
-        self._copy = self._add_button(options, "复制", self.copy_requested, "Ctrl+C")
-        self._copy.setObjectName("copyAnnotation")
-        self._save = self._add_button(options, "另存", self.save_requested, "Ctrl+S")
-        self.set_tool(Tool.SELECT)
-        self.set_text_editing(False)
+        self._drag_handle = QToolButton(self)
+        self._drag_handle.setIcon(toolbar_icon("drag_handle"))
+        self._drag_handle.setIconSize(QSize(18, 22))
+        self._drag_handle.setFixedSize(17, _BUTTON_SIZE)
+        describe_control(self._drag_handle, "拖动工具栏")
+        self.position = PanelPosition(self, self._drag_handle)
+        self._main_buttons: list[QWidget] = [self._drag_handle]
+        self._buttons: dict[Tool, QToolButton] = {}
+        self._action_buttons: dict[str, QToolButton] = {}
+        self._variants = {group[0]: group[0] for group in _FAMILIES}
+        for index, group in enumerate(_GROUPS):
+            if index:
+                self._main_buttons.append(self._separator())
+            for item in group:
+                self._main_buttons.append(self._button(item))
+        self._action_buttons["copy"].setObjectName("copyAnnotation")
+        self._available_width = 0
+        self.set_tool(Tool.MOVE)
         self.set_history(False, False)
 
     @property
-    def color(self) -> str:
-        return self._color.color
+    def preferred_width(self) -> int:
+        buttons = len(self._buttons) + len(self._action_buttons)
+        return (
+            2 * _MARGINS + self._drag_handle.width() + buttons * _BUTTON_SIZE
+            + (len(_GROUPS) - 1) * _SEPARATOR_WIDTH
+            + (len(self._main_buttons) - 1) * _BUTTON_GAP
+        )
 
-    @property
-    def width_px(self) -> int:
-        return self._width.value
+    def shortcuts(self) -> list[tuple[tuple[str, ...], Callable[[], None]]]:
+        tools = [
+            (command.keys, lambda tool=tool: self.activate_tool(tool))
+            for tool, command in _TOOL_COMMANDS.items()
+        ]
+        actions = [
+            (command.keys, self._action_buttons[name].click)
+            for name, command in _ACTION_COMMANDS.items()
+        ]
+        return [*tools, *actions]
 
-    @property
-    def font_size_px(self) -> int:
-        return self._font_size.value
-
-    @property
-    def block_size_px(self) -> int:
-        return self._block_size.value
-
-    @property
-    def is_filled(self) -> bool:
-        return self._fill.isChecked()
+    def activate_tool(self, tool: Tool) -> None:
+        self.tool_changed.emit(self._variants.get(tool, tool))
 
     def set_tool(self, tool: Tool) -> None:
-        self._buttons[tool].setChecked(True)
-        is_stroke = tool in (Tool.RECTANGLE, Tool.ELLIPSE, Tool.LINE, Tool.ARROW, Tool.PEN)
-        self._color.setVisible(is_stroke or tool is Tool.TEXT)
-        self._width.setVisible(is_stroke)
-        self._font_size.setVisible(tool is Tool.TEXT)
-        self._block_size.setVisible(tool is Tool.MOSAIC)
-        self._fill.setVisible(tool in _FILL_TOOLS)
-
-    def set_text_style(self, color: str, font_size_px: int) -> None:
-        self._color.set_color(color)
-        self._font_size.set_value(font_size_px)
-
-    def set_text_editing(self, is_editing: bool) -> None:
-        for button in self._buttons.values():
-            button.setEnabled(not is_editing)
-        self._text_accept.setVisible(is_editing)
-        self._text_cancel.setVisible(is_editing)
-        self._copy.setEnabled(not is_editing)
-        self._save.setEnabled(not is_editing)
-
-    def set_element_selected(self, is_selected: bool) -> None:
-        self._delete.setEnabled(is_selected)
+        primary = _PRIMARY.get(tool, tool)
+        if primary in self._variants:
+            self._variants[primary] = tool
+            self._buttons[primary].setIcon(toolbar_icon(tool.value, primary=True))
+        for group, button in self._buttons.items():
+            button.setChecked(group is primary)
 
     def set_history(self, can_undo: bool, can_redo: bool) -> None:
-        self._undo.setEnabled(can_undo)
-        self._redo.setEnabled(can_redo)
+        self._action_buttons["undo"].setEnabled(can_undo)
+        self._action_buttons["redo"].setEnabled(can_redo)
 
-    def _add_button(self, layout: QHBoxLayout, text: str, signal=None, shortcut="") -> QToolButton:
+    def fit_to_width(self, width: int) -> None:
+        if width == self._available_width:
+            return
+        self._available_width = width
+        while self._rows.count():
+            row = self._rows.takeAt(0).layout()
+            while row.count():
+                row.takeAt(0)
+            row.deleteLater()
+        inner_width = max(24, width - 2 * _MARGINS)
+        buttons = len(self._buttons) + len(self._action_buttons)
+        size = max(26, _BUTTON_SIZE - max(0, self.preferred_width - width + buttons - 1) // buttons)
+        row = self._add_row()
+        span = 0
+        for widget in self._main_buttons:
+            if isinstance(widget, QToolButton) and widget is not self._drag_handle:
+                widget.setFixedSize(size, size)
+                widget.setIconSize(QSize(size - 10, size - 10))
+            advance = widget.width() + (_BUTTON_GAP if row.count() else 0)
+            if span + advance > inner_width and row.count():
+                row = self._add_row()
+                span = 0
+                advance = widget.width()
+            row.addWidget(widget, alignment=Qt.AlignmentFlag.AlignVCenter)
+            span += advance
+        self._rows.invalidate()
+        self.resize(self.sizeHint())
+        self._rows.activate()
+
+    def _add_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(_BUTTON_GAP)
+        row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._rows.addLayout(row)
+        return row
+
+    def _separator(self) -> QFrame:
+        holder = QFrame(self)
+        holder.setFixedSize(_SEPARATOR_WIDTH, 24)
+        line = QFrame(holder)
+        line.setObjectName("toolbarDivider")
+        line.setGeometry(_SEPARATOR_WIDTH // 2, 5, 1, 14)
+        return holder
+
+    def _button(self, item: Tool | str) -> QToolButton:
         button = QToolButton(self)
-        button.setText(text)
-        if shortcut:
-            button.setToolTip(f"{text}（{shortcut}）")
-        if signal is not None:
-            button.clicked.connect(signal)
-        layout.addWidget(button)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        if isinstance(item, Tool):
+            button.setProperty("toolButton", True)
+            button.setIcon(toolbar_icon(item.value, primary=True))
+            button.setCheckable(True)
+            button.clicked.connect(lambda: self.activate_tool(item))
+            describe_button(button, _TOOL_COMMANDS[item])
+            self._buttons[item] = button
+        else:
+            button.setIcon(toolbar_icon(item))
+            button.clicked.connect(lambda: self.action_requested.emit(item))
+            describe_button(button, _ACTION_COMMANDS[item])
+            self._action_buttons[item] = button
         return button
