@@ -9,24 +9,24 @@ from e2s.annotation.elements import (
     MAX_STROKE_WIDTH_PX,
     MIN_FONT_SIZE_PX,
     Element,
-    Mosaic,
     Point,
     Stroke,
     Text,
 )
-from e2s.annotation.renderer import element_bounds
+from e2s.annotation.renderer import arrow_control, element_bounds
 from e2s.capture.geometry import ResizeHandle
 
 
 class Endpoint(Enum):
     START = 0
     END = -1
+    CONTROL = 1
 
 
 def resize_bounds(element: Element) -> QRectF:
     if isinstance(element, Text) or (isinstance(element, Stroke) and len(element.points) == 1):
         return element_bounds(element)
-    points = (element.start, element.end) if isinstance(element, Mosaic) else element.points
+    points = element.points
     xs, ys = zip(*points)
     rect = QRectF(QPointF(min(xs), min(ys)), QPointF(max(xs), max(ys)))
     if rect.width() == 0:
@@ -83,8 +83,6 @@ class ElementResize:
                 top + (point[1] - origin_y) * new_height / height,
             )
 
-        if isinstance(element, Mosaic):
-            return replace(element, start=map_point(element.start), end=map_point(element.end))
         return replace(element, points=tuple(map_point(point) for point in element.points))
 
     def _move_endpoint(self, dx_px: float, dy_px: float) -> Element:
@@ -92,6 +90,9 @@ class ElementResize:
         if not isinstance(element, Stroke) or not isinstance(handle, Endpoint):
             return element
         start, end = element.points
+        if handle is Endpoint.CONTROL:
+            x, y = arrow_control(element)
+            return replace(element, control=(x + dx_px, y + dy_px))
         if handle is Endpoint.START:
             start = start[0] + dx_px, start[1] + dy_px
         else:

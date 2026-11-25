@@ -25,7 +25,8 @@ class QtClipboardWriter:
             raise ClipboardWriteError(str(error)) from error
 
 
-def _to_service_snapshot(snapshot: OutputSnapshot) -> ServiceSnapshot:
+def to_service_snapshot(snapshot: OutputSnapshot) -> ServiceSnapshot:
+    """Share the immutable pixel buffer in the format used by output and history services."""
     return ServiceSnapshot(
         operation_id=str(snapshot.operation_id),
         session_id=str(snapshot.session_id),
@@ -39,7 +40,7 @@ def _to_service_snapshot(snapshot: OutputSnapshot) -> ServiceSnapshot:
 def copy_snapshot(snapshot: OutputSnapshot) -> TaskResult:
     """Use the Windows clipboard on the GUI thread."""
     return OutputService(QtClipboardWriter()).copy_image_to_clipboard(
-        _to_service_snapshot(snapshot)
+        to_service_snapshot(snapshot)
     )
 
 
@@ -48,5 +49,5 @@ def save_snapshot(
 ) -> SaveResult:
     """Encode a submitted snapshot and publish the PNG from a worker thread."""
     return OutputFileService(target.parent).save_as(
-        _to_service_snapshot(snapshot), target, is_overwrite_confirmed=is_overwrite_confirmed
+        to_service_snapshot(snapshot), target, is_overwrite_confirmed=is_overwrite_confirmed
     )

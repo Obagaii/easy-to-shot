@@ -1,11 +1,12 @@
 from time import sleep
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+import zxingcpp
 from PIL import Image
-from PySide6.QtGui import QColor, QImage, QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QToolButton
 
 from e2s.annotation.elements import Tool
 from e2s.app import capture_output
@@ -13,6 +14,8 @@ from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
 from e2s.capture.service import CaptureFrame
 from e2s.platform.windows.clipboard import ClipboardError
+from e2s.storage.history import HistoryService, HistoryStore
+from e2s.ui.native import qr_results
 from e2s.ui.native.tray import Tray, create_app_icon
 from e2s.ui.native.workbench import Workbench
 
@@ -78,7 +81,9 @@ def test_capture_hides_maximized_workbench_and_cancel_restores_it(
 def test_display_change_cancels_capture_started_from_tray(desktop) -> None:
     controller, workbench, tray, screen = desktop
     results = []
+    outputs = []
     controller.snapshot_ready.connect(results.append)
+    controller.output_succeeded.connect(lambda *event: outputs.append(event))
     tray.capture_requested.emit()
     overlay = wait_for_overlay(controller)
 
@@ -87,6 +92,7 @@ def test_display_change_cancels_capture_started_from_tray(desktop) -> None:
     assert not overlay.isVisible()
     assert not workbench.isVisible()
     assert not results
+    assert not outputs
 
 
 def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch) -> None:
@@ -94,7 +100,9 @@ def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch)
     copied = []
     monkeypatch.setattr(capture_output, "copy_image_to_clipboard", copied.append)
     results = []
-    controller.snapshot_ready.connect(lambda snapshot: results.append(snapshot))
+    outputs = []
+    controller.snapshot_ready.connect(results.append)
+    controller.output_succeeded.connect(lambda *event: outputs.append(event))
     workbench.showMaximized()
     workbench.capture_requested.emit()
     overlay = wait_for_overlay(controller)
@@ -114,6 +122,11 @@ def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch)
 
     assert len(results) == 1
     snapshot = results[0]
+    assert len(outputs) == 1
+    submitted, result, source = outputs[0]
+    assert source == "copy"
+    assert submitted.operation_id == result.operation_id == str(snapshot.operation_id)
+    assert submitted.pixels == snapshot.rgba_pixels
     selection = snapshot.selection
     assert selection.left == int(40 / overlay.width() * frame.width()) + 1
     assert selection.top == int(30 / overlay.height() * frame.height())
@@ -233,7 +246,7 @@ def test_resizing_with_a_drawing_tool_keeps_marks_at_the_same_screen_pixels(desk
     QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(150, 110))
     QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(520, 355))
     canvas = overlay._canvas
-    QTest.mouseClick(canvas._toolbar._buttons[Tool.LINE], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.ARROW], Qt.MouseButton.LeftButton)
     QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=QPoint(220, 170))
     QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=QPoint(355, 170))
     assert len(canvas._document.elements) == 1
@@ -259,7 +272,7 @@ def test_resizing_with_a_drawing_tool_keeps_marks_at_the_same_screen_pixels(desk
     assert not canvas._document.elements
     assert overlay._session.selection == resized
     QTest.keyClick(
-        canvas, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        canvas, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier
     )
     assert canvas._document.elements == (element,)
 
@@ -310,7 +323,7 @@ def test_annotated_preview_copy_and_saved_png_match_after_output_retries(
     QTest.mouseClick(canvas._toolbar._buttons[Tool.RECTANGLE], Qt.MouseButton.LeftButton)
     QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(60, 85))
     QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(240, 190))
-    QTest.mouseClick(canvas._toolbar._buttons[Tool.MOSAIC], Qt.MouseButton.LeftButton)
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.RECT_HIGHLIGHT], Qt.MouseButton.LeftButton)
     QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(85, 80))
     QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(260, 160))
     preview = canvas._preview_image()
@@ -339,3 +352,210 @@ def test_annotated_preview_copy_and_saved_png_match_after_output_retries(
     with Image.open(target) as image:
         assert image.size == (preview.width(), preview.height())
         assert image.tobytes() == exported[0].rgba_pixels
+
+
+def test_pin_keeps_composite_for_copy_save_and_history_after_zoom(
+    desktop, monkeypatch, tmp_path
+) -> None:
+    controller, workbench, _, screen = desktop
+    frame = QImage(320, 200, QImage.Format.Format_RGBA8888)
+    frame.fill(QColor("#216581"))
+    monkeypatch.setattr(
+        controller_module, "capture_frame", lambda target: CaptureFrame(
+            target.name(), target.geometry(), frame
+        )
+    )
+    copied = []
+    monkeypatch.setattr(capture_output, "copy_image_to_clipboard", copied.append)
+    target = tmp_path / "pinned.png"
+    targets = iter((None, target))
+    dialog_windows = []
+
+    def choose_target(window, *_args, **_kwargs):
+        dialog_windows.append(window)
+        return next(targets)
+
+    monkeypatch.setattr(controller_module, "choose_image_save_path", choose_target)
+    store = HistoryStore(tmp_path / "storage")
+    history = HistoryService(store)
+    outputs = []
+    controller.output_succeeded.connect(lambda *event: outputs.append(event))
+    controller.output_succeeded.connect(history.record_success)
+
+    workbench.show()
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(40, 50))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(310, 250))
+    canvas = overlay._canvas
+    QTest.mouseClick(canvas._toolbar._buttons[Tool.RECTANGLE], Qt.MouseButton.LeftButton)
+    QTest.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(90, 100))
+    QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=QPoint(210, 170))
+    preview = canvas._preview_image()
+    assert preview != canvas._document.source
+    assert not outputs
+
+    QTest.mouseClick(canvas._toolbar._action_buttons["pin"], Qt.MouseButton.LeftButton)
+    assert controller._overlay is None
+    assert workbench.isVisible()
+    assert len(controller._pinned_images) == 1
+    pin, = controller._pinned_images
+    assert pin.isVisible()
+    assert len(outputs) == 1
+    snapshot, result, source = outputs[0]
+    assert source == "pin"
+    assert snapshot.operation_id == result.operation_id
+    assert snapshot.pixels == bytes(preview.constBits())
+    assert (snapshot.width_px, snapshot.height_px) == (preview.width(), preview.height())
+
+    initial_size = pin.size()
+    local = QPointF(8, 8)
+    wheel = QWheelEvent(
+        local, QPointF(pin.mapToGlobal(local.toPoint())), QPoint(), QPoint(0, 240),
+        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(pin, wheel)
+    assert pin.width() > initial_size.width()
+    assert pin.width() != snapshot.width_px
+
+    QTest.keyClick(pin, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert copied == [preview]
+    assert pin.isVisible()
+    assert [event[2] for event in outputs] == ["pin", "copy"]
+
+    QTest.keyClick(pin, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    assert pin.isVisible()
+    assert len(outputs) == 2
+    assert not target.exists()
+    QTest.keyClick(pin, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
+    for _ in range(100):
+        if len(outputs) == 3:
+            break
+        QTest.qWait(10)
+    assert dialog_windows == [pin, pin]
+    assert [event[2] for event in outputs] == ["pin", "copy", "save"]
+    assert len({output.operation_id for output, _, _ in outputs}) == 3
+    for output, output_result, _ in outputs:
+        assert output.operation_id == output_result.operation_id
+        assert output.session_id == snapshot.session_id
+        assert output.revision == snapshot.revision
+        assert output.pixels == snapshot.pixels
+
+    with Image.open(target) as saved:
+        assert saved.size == (snapshot.width_px, snapshot.height_px)
+        assert saved.convert("RGBA").tobytes() == snapshot.pixels
+    saved_items = store.list_recent()
+    assert len(saved_items) == 1
+    assert saved_items[0].source == "pin"
+    with Image.open(store.image_path(saved_items[0])) as recorded:
+        assert recorded.convert("RGBA").tobytes() == snapshot.pixels
+
+    pin.move(screen.geometry().bottomRight() + QPoint(100, 100))
+    controller._displays.changed.emit()
+    QTest.qWait(10)
+    assert screen.availableGeometry().contains(pin.geometry())
+    assert pin.isVisible()
+
+    controller.close()
+    assert not pin.isVisible()
+    assert not controller._pinned_images
+
+
+def test_pin_allocation_failure_keeps_capture_open_for_retry(desktop, monkeypatch) -> None:
+    controller, workbench, _, _ = desktop
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(30, 40))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(190, 140))
+    canvas = overlay._canvas
+    outputs = []
+    controller.output_succeeded.connect(lambda *event: outputs.append(event))
+
+    def reject_pin(_image):
+        raise MemoryError
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller_module, "PinnedImage", reject_pin)
+        QTest.keyClick(canvas, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+        assert controller._overlay is overlay
+        assert not controller._pinned_images
+        assert not outputs
+
+    QTest.keyClick(canvas, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert controller._overlay is None
+    assert len(controller._pinned_images) == 1
+    assert [event[2] for event in outputs] == ["pin"]
+
+
+def test_scroll_tool_opens_inline_and_copies_the_stitched_pixels(desktop, monkeypatch) -> None:
+    controller, workbench, _, _ = desktop
+    clipboard = []
+    monkeypatch.setattr(capture_output, "copy_image_to_clipboard", clipboard.append)
+    workbench.show()
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(40, 50))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(320, 265))
+    selected = overlay._session.selection
+    sample = QImage(selected.width_px, selected.height_px, QImage.Format.Format_RGBA8888)
+    sample.fill(QColor("#2b63bc"))
+    monkeypatch.setattr(controller_module, "grab_region", lambda _screen, _selection: sample)
+
+    QTest.keyClick(overlay._canvas, Qt.Key.Key_L)
+    panel = controller._live_panel
+    assert panel is not None
+    assert not overlay.isVisible()
+    for _ in range(100):
+        QApplication.processEvents()
+        if panel._ready:
+            break
+        sleep(0.01)
+    assert panel._thumbnail.isVisible()
+
+    panel._results[-1].click()
+    for _ in range(100):
+        QApplication.processEvents()
+        if clipboard:
+            break
+        sleep(0.01)
+    assert controller._live_panel is None and controller._overlay is None
+    assert workbench.isVisible()
+    assert clipboard == [sample]
+
+
+def test_scan_codes_place_markers_and_copy_the_selected_result(desktop, monkeypatch) -> None:
+    controller, workbench, _, screen = desktop
+    payload = "Easy to Shot QR"
+    code = zxingcpp.create_barcode(payload, zxingcpp.BarcodeFormat.QRCode)
+    sample = Image.fromarray(zxingcpp.write_barcode_to_image(code, 4)).convert("RGBA")
+    dpr = screen.devicePixelRatio()
+    geometry = screen.geometry()
+    image = Image.new("RGBA", (round(geometry.width() * dpr), round(geometry.height() * dpr)), "white")
+    image.paste(sample, (round(80 * dpr), round(85 * dpr)))
+    frozen = QImage(image.tobytes(), *image.size, QImage.Format.Format_RGBA8888).copy()
+    monkeypatch.setattr(
+        controller_module, "capture_frame", lambda _screen: CaptureFrame("qr", geometry, frozen)
+    )
+
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(40, 50))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(320, 265))
+    QTest.keyClick(overlay._canvas, Qt.Key.Key_Q, Qt.KeyboardModifier.ControlModifier)
+    for _ in range(100):
+        markers = overlay.findChildren(QToolButton, "codeMarker")
+        if markers:
+            break
+        QTest.qWait(10)
+    (marker,) = markers
+    center = marker.geometry().center()
+    assert center.x() == pytest.approx(80 + sample.width / (2 * dpr), abs=3)
+    assert center.y() == pytest.approx(85 + sample.height / (2 * dpr), abs=3)
+    marker.click()
+    popup = overlay._qr_results._popover
+    assert popup.findChild(QPlainTextEdit).toPlainText() == payload
+    copied = []
+    monkeypatch.setattr(qr_results, "_copy_text", copied.append)
+    popup.findChild(QPushButton).click()
+    assert copied == [payload]
