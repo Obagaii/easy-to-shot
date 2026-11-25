@@ -1,5 +1,24 @@
-import { PictureOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
-import { Button, ConfigProvider, Layout, Menu } from 'antd';
+import {
+  CameraFilled,
+  HistoryOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  PlusOutlined,
+  SearchOutlined,
+  SettingOutlined,
+} from '@ant-design/icons';
+import {
+  Button,
+  Card,
+  ConfigProvider,
+  Input,
+  Layout,
+  Menu,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { createBridge } from '../bridge';
@@ -32,6 +51,19 @@ const defaultHotkeyState: HotkeyState = {
   effectiveHotkey: defaultSettings.hotkey,
 };
 
+const pageMeta: Record<PageKey, { eyebrow: string; title: string; subtitle: string }> = {
+  history: {
+    eyebrow: '工作台 · WORKSPACE',
+    title: '截图历史',
+    subtitle: '查看截取的画面、复制结果或另存到本地。',
+  },
+  settings: {
+    eyebrow: '工作台 · WORKSPACE',
+    title: '设置',
+    subtitle: '调整截图热键、输出目录与历史记录。',
+  },
+};
+
 function fallbackResult(): SettingsResult {
   return {
     settings: { ...defaultSettings },
@@ -57,6 +89,8 @@ function noticeFor(draft: SettingsDraft): string {
 
 export function App() {
   const [activePage, setActivePage] = useState<PageKey>('history');
+  const [isSiderCollapsed, setIsSiderCollapsed] = useState(false);
+  const [query, setQuery] = useState('');
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [hotkeyState, setHotkeyState] = useState<HotkeyState | null>(null);
   const [settingsNotice, setSettingsNotice] = useState('');
@@ -141,52 +175,141 @@ export function App() {
     return result;
   };
 
+  const meta = pageMeta[activePage];
+
   return (
     <ConfigProvider locale={zhCN} theme={createThemeConfig(isMotionDisabled)}>
       <Layout className="workbench">
-        <Layout.Sider width={200} className="workbench-sider">
-          <div className="workbench-brand">Easy to Shot</div>
-          <Menu
-            mode="inline"
-            selectedKeys={[activePage]}
-            items={[
-              { key: 'history', icon: <PictureOutlined />, label: '历史' },
-              { key: 'settings', icon: <SettingOutlined />, label: '设置' },
-            ]}
-            onClick={({ key }) => setActivePage(key as PageKey)}
-          />
-        </Layout.Sider>
-        <Layout.Content className="workbench-content">
-          <header className="workbench-header">
-            <h1 className="workbench-title">
-              {activePage === 'history' ? '历史' : '设置'}
-            </h1>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => void bridge.startCapture({ triggerSource: 'workbench' })}
+        <Layout.Sider
+          className="workbench-sider"
+          width={220}
+          collapsedWidth={80}
+          collapsible
+          collapsed={isSiderCollapsed}
+          trigger={null}
+        >
+          <div className="workbench-sider-inner">
+            <div className="workbench-brand">
+              <span className="workbench-brand-mark" aria-hidden="true">
+                <CameraFilled />
+              </span>
+              {!isSiderCollapsed && (
+                <span className="workbench-brand-name">Easy to Shot</span>
+              )}
+            </div>
+
+            <div
+              className={
+                isSiderCollapsed
+                  ? 'workbench-search workbench-search-collapsed'
+                  : 'workbench-search'
+              }
             >
-              新建截图
-            </Button>
+              {isSiderCollapsed ? (
+                <Tooltip title="展开侧栏搜索" placement="right">
+                  <Button
+                    type="text"
+                    icon={<SearchOutlined />}
+                    aria-label="展开侧栏搜索"
+                    onClick={() => setIsSiderCollapsed(false)}
+                  />
+                </Tooltip>
+              ) : (
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索当前页面"
+                  aria-label="搜索当前页面"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              )}
+            </div>
+
+            <Menu
+              className="workbench-menu"
+              mode="inline"
+              selectedKeys={[activePage]}
+              items={[
+                {
+                  type: 'group',
+                  label: '工作台',
+                  children: [
+                    {
+                      key: 'history',
+                      icon: <HistoryOutlined />,
+                      label: '截图历史',
+                    },
+                    {
+                      key: 'settings',
+                      icon: <SettingOutlined />,
+                      label: '设置',
+                    },
+                  ],
+                },
+              ]}
+              onClick={({ key }) => setActivePage(key as PageKey)}
+            />
+
+            <div className="workbench-sider-footer">
+              <Button
+                type="text"
+                icon={isSiderCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                aria-label={isSiderCollapsed ? '展开侧栏' : '折叠侧栏'}
+                onClick={() => setIsSiderCollapsed((value) => !value)}
+              />
+              {!isSiderCollapsed && (
+                <Typography.Text type="secondary" className="workbench-sider-version">
+                  v1.0 · 本地版
+                </Typography.Text>
+              )}
+            </div>
+          </div>
+        </Layout.Sider>
+
+        <Layout.Content className="workbench-main">
+          <header className="workbench-topbar">
+            <div className="workbench-topbar-heading">
+              <div className="workbench-eyebrow">{meta.eyebrow}</div>
+              <h1 className="workbench-title">{meta.title}</h1>
+              <Typography.Text type="secondary" className="workbench-subtitle">
+                {meta.subtitle}
+              </Typography.Text>
+            </div>
+            <Space size="small">
+              <Tag className="workbench-local-tag">离线运行</Tag>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => void bridge.startCapture({ triggerSource: 'workbench' })}
+              >
+                新建截图
+              </Button>
+            </Space>
           </header>
-          {activePage === 'history' ? (
-            <HistoryPage
-              items={historyItems}
-              isLoading={isLoading}
-              onCopy={(id) => bridge.copyHistoryItem(id)}
-              onSaveAs={(id) => bridge.saveHistoryItemAs(id)}
-              onDelete={handleDelete}
-              onClear={handleClear}
-            />
-          ) : (
-            <SettingsPage
-              settings={settings?.settings ?? null}
-              hotkeyState={hotkeyState}
-              notice={settingsNotice}
-              onSave={handleSaveSettings}
-              onReset={handleResetSettings}
-            />
-          )}
+
+          <Card className="workbench-content-card" variant="borderless">
+            {activePage === 'history' ? (
+              <HistoryPage
+                items={historyItems}
+                isLoading={isLoading}
+                query={query}
+                onCopy={(id) => bridge.copyHistoryItem(id)}
+                onSaveAs={(id) => bridge.saveHistoryItemAs(id)}
+                onDelete={handleDelete}
+                onClear={handleClear}
+              />
+            ) : (
+              <SettingsPage
+                settings={settings?.settings ?? null}
+                hotkeyState={hotkeyState}
+                notice={settingsNotice}
+                query={query}
+                onSave={handleSaveSettings}
+                onReset={handleResetSettings}
+              />
+            )}
+          </Card>
         </Layout.Content>
       </Layout>
     </ConfigProvider>

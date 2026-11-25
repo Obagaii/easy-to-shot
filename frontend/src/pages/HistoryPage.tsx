@@ -5,18 +5,20 @@ import {
   Drawer,
   Empty,
   Modal,
+  Pagination,
   Skeleton,
   Space,
   Spin,
   Tag,
   Typography,
 } from 'antd';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { HistoryItem, TaskResult } from '../bridge';
 
 interface HistoryPageProps {
   items: HistoryItem[];
   isLoading: boolean;
+  query: string;
   onCopy: (historyItemId: string) => Promise<TaskResult>;
   onSaveAs: (historyItemId: string) => Promise<TaskResult>;
   onDelete: (historyItemId: string) => Promise<TaskResult>;
@@ -53,6 +55,8 @@ const errorMessages: Record<string, string> = {
   directory_not_writable: '输出目录不可写。',
   queue_full: '任务队列已满。',
 };
+
+const pageSize = 8;
 
 function sourceLabel(source: string): string {
   return sourceLabels[source] ?? source;
@@ -98,7 +102,7 @@ function PreviewImage({ item, variant }: PreviewImageProps) {
   if (state === 'failed') {
     return (
       <div className={`preview-fallback preview-fallback-${variant}`} role="status">
-        <span>无预览</span>
+        <span>预览不可用</span>
         <Button
           size="small"
           onClick={() => {
@@ -133,15 +137,18 @@ function PreviewImage({ item, variant }: PreviewImageProps) {
 export function HistoryPage({
   items,
   isLoading,
+  query,
   onCopy,
   onSaveAs,
   onDelete,
   onClear,
 }: HistoryPageProps) {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [confirmItemId, setConfirmItemId] = useState<string | null>(null);
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false);
   const [feedback, setFeedback] = useState<TaskFeedback>(idleFeedback);
+  const [currentPage, setCurrentPage] = useState(1);
   const triggerRef = useRef<HTMLElement | null>(null);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const busyRef = useRef(false);
@@ -149,12 +156,38 @@ export function HistoryPage({
   const isMountedRef = useRef(true);
   const selectedItem = items.find((item) => item.historyItemId === selectedItemId) ?? null;
 
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredItems = useMemo(
+    () =>
+      items.filter((item) => {
+        if (!normalizedQuery) return true;
+        const haystack = [
+          formatTimestamp(item.createdAtUtc),
+          sourceLabel(item.source),
+          item.historyItemId,
+          item.sessionId,
+          `${item.widthPx} × ${item.heightPx}`,
+        ]
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(normalizedQuery);
+      }),
+    [items, normalizedQuery]
+  );
+  const pageCount = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const visibleItems = filteredItems.slice(
+    (Math.min(currentPage, pageCount) - 1) * pageSize,
+    Math.min(currentPage, pageCount) * pageSize
+  );
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => setCurrentPage(1), [normalizedQuery]);
 
   const openPreview = (historyItemId: string, trigger: HTMLElement) => {
     triggerRef.current = trigger;
@@ -189,6 +222,7 @@ export function HistoryPage({
       if (state === 'succeeded' && (action === '删除' || action === '清空')) {
         setIsConfirmOpen(false);
         setIsClearConfirmOpen(false);
+        setConfirmItemId(null);
         closePreview();
         triggerRef.current = null;
       }
@@ -217,14 +251,22 @@ export function HistoryPage({
 
   return (
     <div className="history-page" ref={pageRef} tabIndex={-1}>
-      <div className="history-toolbar">
-        <Typography.Text type="secondary">{items.length} 条</Typography.Text>
+      <div className="history-page-head">
+        <div>
+          <Typography.Title level={5} className="history-page-title">
+            历史记录
+          </Typography.Title>
+          <Typography.Text type="secondary">
+            {items.length} 条记录
+            {normalizedQuery && ` · 匹配 ${filteredItems.length} 条`}
+          </Typography.Text>
+        </div>
         <Button
           danger
           disabled={items.length === 0 || isBusy}
           onClick={() => setIsClearConfirmOpen(true)}
         >
-          清空
+          清空历史
         </Button>
       </div>
 
@@ -240,35 +282,111 @@ export function HistoryPage({
         />
       )}
 
-      {items.length === 0 ? (
-        <Empty description="暂无历史记录" />
-      ) : (
-        <div className="history-grid">
-          {items.map((item) => (
-            <Card
-              key={item.historyItemId}
-              hoverable
-              className="history-card"
-              role="button"
-              tabIndex={0}
-              aria-label={`查看历史记录 ${item.historyItemId}`}
-              onClick={(event) => openPreview(item.historyItemId, event.currentTarget)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  openPreview(item.historyItemId, event.currentTarget);
-                }
-              }}
-              cover={<PreviewImage item={item} variant="thumb" />}
-            >
-              <Card.Meta
-                title={formatTimestamp(item.createdAtUtc)}
-                description={`${item.widthPx} × ${item.heightPx} · ${formatBytes(item.byteSize)}`}
-              />
-              <Tag className="history-source">{sourceLabel(item.source)}</Tag>
-            </Card>
-          ))}
+      {filteredItems.length === 0 ? (
+        <div className="history-empty">
+          <Empty description={items.length === 0 ? '暂无历史记录' : '没有匹配的历史记录'}>
+            <Typography.Text type="secondary">
+              {items.length === 0
+                ? '完成截图、复制或另存后，结果会显示在这里。'
+                : '试试其他关键词，或清空搜索条件。'}
+            </Typography.Text>
+          </Empty>
         </div>
+      ) : (
+        <>
+          <div className="history-list">
+            {visibleItems.map((item) => (
+              <Card
+                key={item.historyItemId}
+                className="history-entry-card"
+                variant="borderless"
+                role="button"
+                tabIndex={0}
+                aria-label={`查看历史记录 ${item.historyItemId}`}
+                onClick={(event) => openPreview(item.historyItemId, event.currentTarget)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openPreview(item.historyItemId, event.currentTarget);
+                  }
+                }}
+              >
+                <div className="history-entry-body">
+                  <div className="history-entry-detail">
+                    <div className="history-entry-head">
+                      <span className="history-entry-date">
+                        {formatTimestamp(item.createdAtUtc)}
+                      </span>
+                      <Tag className="history-entry-source" bordered={false}>
+                        {sourceLabel(item.source)}
+                      </Tag>
+                    </div>
+                    <div className="history-entry-meta">
+                      <span>{item.widthPx} × {item.heightPx}</span>
+                      <span className="history-entry-dot">·</span>
+                      <span>{formatBytes(item.byteSize)}</span>
+                    </div>
+                    <div className="history-entry-session">
+                      会话 {item.sessionId.slice(0, 8)} · 修订 {item.revision}
+                    </div>
+                    <div className="history-entry-actions">
+                      <Button
+                        type="link"
+                        size="small"
+                        disabled={isBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void runTask('复制', () => onCopy(item.historyItemId));
+                        }}
+                      >
+                        复制
+                      </Button>
+                      <Button
+                        type="link"
+                        size="small"
+                        disabled={isBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void runTask('另存', () => onSaveAs(item.historyItemId));
+                        }}
+                      >
+                        另存
+                      </Button>
+                      <Button
+                        type="link"
+                        size="small"
+                        danger
+                        disabled={isBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          triggerRef.current = event.currentTarget;
+                          setConfirmItemId(item.historyItemId);
+                          setIsConfirmOpen(true);
+                        }}
+                      >
+                        删除
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="history-entry-preview">
+                    <PreviewImage item={item} variant="thumb" />
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+          {pageCount > 1 && (
+            <div className="history-pagination">
+              <Pagination
+                current={Math.min(currentPage, pageCount)}
+                pageSize={pageSize}
+                total={filteredItems.length}
+                showSizeChanger={false}
+                onChange={setCurrentPage}
+              />
+            </div>
+          )}
+        </>
       )}
 
       <Drawer
@@ -297,7 +415,15 @@ export function HistoryPage({
             >
               另存
             </Button>
-            <Button danger disabled={isBusy} onClick={() => setIsConfirmOpen(true)}>
+            <Button
+              danger
+              disabled={isBusy}
+              onClick={() => {
+                if (!selectedItem) return;
+                setConfirmItemId(selectedItem.historyItemId);
+                setIsConfirmOpen(true);
+              }}
+            >
               删除
             </Button>
           </Space>
@@ -323,8 +449,7 @@ export function HistoryPage({
         okButtonProps={{ danger: true, disabled: isBusy }}
         cancelText="取消"
         onOk={() =>
-          selectedItem &&
-          void runTask('删除', () => onDelete(selectedItem.historyItemId))
+          confirmItemId && void runTask('删除', () => onDelete(confirmItemId))
         }
         onCancel={() => setIsConfirmOpen(false)}
       >
