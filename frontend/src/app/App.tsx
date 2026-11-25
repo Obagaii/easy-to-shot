@@ -1,4 +1,5 @@
-import { Alert, Button, ConfigProvider, Layout, Menu, Typography } from 'antd';
+import { PictureOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
+import { Button, ConfigProvider, Layout, Menu } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { createBridge } from '../bridge';
@@ -51,7 +52,7 @@ function currentOrFallback(
 }
 
 function noticeFor(draft: SettingsDraft): string {
-  return draft.outputDirectory ? '' : '未设置输出目录，首次输出时将使用系统图片目录。';
+  return draft.outputDirectory ? '' : '输出目录未设置，将使用系统图片目录。';
 }
 
 export function App() {
@@ -61,7 +62,6 @@ export function App() {
   const [settingsNotice, setSettingsNotice] = useState('');
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [taskMessage, setTaskMessage] = useState('');
   const isMotionDisabled = useReducedMotion();
   const bridge = useMemo(() => createBridge(), []);
 
@@ -78,7 +78,7 @@ export function App() {
         setSettings(fallbackResult());
         setHotkeyState({ ...defaultHotkeyState });
         setHistoryItems([]);
-        setSettingsNotice('数据读取失败，已按默认设置启动。');
+        setSettingsNotice('读取失败，使用默认设置。');
         setIsLoading(false);
         return;
       }
@@ -90,15 +90,11 @@ export function App() {
       setHistoryItems(list.items);
       setIsLoading(false);
       setSettingsNotice(
-        isCorrupt ? '设置文件损坏，已按默认设置启动。' : noticeFor(effective.settings)
+        isCorrupt ? '设置损坏，使用默认设置。' : noticeFor(effective.settings)
       );
     })();
-    const unsubscribe = bridge.onTaskFinished((result) => {
-      if (isActive) setTaskMessage(`任务 ${result.operationId}：${result.state}`);
-    });
     return () => {
       isActive = false;
-      unsubscribe();
     };
   }, [bridge]);
 
@@ -154,25 +150,25 @@ export function App() {
             mode="inline"
             selectedKeys={[activePage]}
             items={[
-              { key: 'history', label: '历史' },
-              { key: 'settings', label: '设置' },
+              { key: 'history', icon: <PictureOutlined />, label: '历史' },
+              { key: 'settings', icon: <SettingOutlined />, label: '设置' },
             ]}
             onClick={({ key }) => setActivePage(key as PageKey)}
           />
         </Layout.Sider>
         <Layout.Content className="workbench-content">
           <header className="workbench-header">
-            <Typography.Title level={4}>
+            <h1 className="workbench-title">
               {activePage === 'history' ? '历史' : '设置'}
-            </Typography.Title>
+            </h1>
             <Button
               type="primary"
+              icon={<PlusOutlined />}
               onClick={() => void bridge.startCapture({ triggerSource: 'workbench' })}
             >
               新建截图
             </Button>
           </header>
-          {taskMessage && <Alert type="info" showIcon message={taskMessage} />}
           {activePage === 'history' ? (
             <HistoryPage
               items={historyItems}
