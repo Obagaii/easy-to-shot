@@ -42,13 +42,13 @@ const reservedHotkeys = new Set([
   'Ctrl+Esc', 'Ctrl+Shift+Esc', 'Ctrl+Alt+Del',
 ]);
 const errorMessages: Record<string, string> = {
-  invalid_max_history_items: '历史保留条数无效，请修改后重试。',
-  invalid_draft: '设置草稿未通过校验。',
-  hotkey_conflict: '热键已被占用，原设置仍然生效。',
-  write_failed: '设置写入失败，原设置仍然生效。',
-  settings_unavailable: '设置服务暂不可用，请重试。',
-  settings_corrupt: '设置文件损坏，已按默认设置启动。',
-  unexpected: '保存未完成，请重试。',
+  invalid_max_history_items: '历史条数需在 1 至 10000 之间。',
+  invalid_draft: '草稿未通过校验。',
+  hotkey_conflict: '热键已被占用，原设置仍生效。',
+  write_failed: '写入失败，原设置仍生效。',
+  settings_unavailable: '设置服务不可用。',
+  settings_corrupt: '设置损坏，使用默认设置。',
+  unexpected: '保存未完成。',
 };
 
 function isMainKey(value: string): boolean {
@@ -87,14 +87,14 @@ function describeResult(action: string, result: SettingsResult): Feedback {
   if (result.hotkeyState.conflict) {
     return {
       state: 'conflict',
-      message: '热键注册冲突，原设置仍然生效。',
+      message: '热键已被占用，原设置仍生效。',
       errorCode: 'hotkey_conflict',
     };
   }
   if (result.errorCode === 'dialog_cancelled' || result.errorCode === 'cancelled') {
     return {
       state: 'cancelled',
-      message: `${action}已取消，草稿保持不变。`,
+      message: `${action}已取消`,
       errorCode: result.errorCode,
     };
   }
@@ -107,7 +107,7 @@ function describeResult(action: string, result: SettingsResult): Feedback {
   }
   return {
     state: 'succeeded',
-    message: `${action}成功，已显示实际生效的设置。`,
+    message: `${action}已生效`,
     errorCode: null,
   };
 }
@@ -161,14 +161,14 @@ export function SettingsPage({
     if (invalid) {
       setFeedback({
         state: 'failed',
-        message: `草稿校验失败：${invalid}`,
+        message: `校验失败：${invalid}`,
         errorCode: 'invalid_draft',
       });
       return;
     }
     busyRef.current = true;
     const token = ++taskTokenRef.current;
-    setFeedback({ state: 'saving', message: `${action}处理中…`, errorCode: null });
+    setFeedback({ state: 'saving', message: `${action}中`, errorCode: null });
     try {
       const result = await call();
       if (!isMountedRef.current || token !== taskTokenRef.current) return;
@@ -179,7 +179,7 @@ export function SettingsPage({
       if (isMountedRef.current && token === taskTokenRef.current) {
         setFeedback({
           state: 'failed',
-          message: `${action}失败：请重试。`,
+          message: `${action}失败：保存未完成。`,
           errorCode: 'unexpected',
         });
       }
@@ -199,10 +199,8 @@ export function SettingsPage({
         <Alert className="settings-feedback" type="warning" showIcon message={notice} />
       )}
       <div className="settings-toolbar">
-        <Typography.Text type={isDirty ? 'warning' : 'secondary'}>
-          {isDirty ? '草稿有未保存的修改' : '当前显示的是已保存设置'}
-        </Typography.Text>
-        <Tag>配置版本 {draft.schemaVersion}</Tag>
+        <Tag color={isDirty ? 'gold' : 'default'}>{isDirty ? '未保存' : '已保存'}</Tag>
+        <Typography.Text type="secondary">配置版本 {draft.schemaVersion}</Typography.Text>
       </div>
 
       {feedback.state !== 'idle' && (
@@ -217,7 +215,7 @@ export function SettingsPage({
       <Form layout="vertical" className="settings-form">
         <Form.Item
           label="截图热键"
-          extra="格式示例：Ctrl+Shift+F8；需含修饰键，不能使用系统保留组合。"
+          extra="例如 Ctrl+Shift+F8"
         >
           <Input
             value={draft.hotkey}
@@ -251,28 +249,28 @@ export function SettingsPage({
               </Space>
               {hotkeyState.conflict && (
                 <Typography.Text type="danger">
-                  草稿热键 {draft.hotkey} 未生效，原设置仍然可用。
+                  草稿 {draft.hotkey} 未生效
                 </Typography.Text>
               )}
             </Space>
           ) : (
-            <Typography.Text type="secondary">正在读取实际热键状态…</Typography.Text>
+            <Typography.Text type="secondary">读取中</Typography.Text>
           )}
         </Form.Item>
 
         <Form.Item
           label="默认输出目录"
-          extra="保存或首次输出时由应用检查可写性；未设置时使用系统图片目录下的 EasyToShot。"
+          extra="留空则使用系统图片目录"
         >
           <Input
             value={draft.outputDirectory}
             disabled={isBusy}
-            placeholder="未设置时使用系统图片目录"
+            placeholder="例如 D:\\图片"
             onChange={(event) => updateDraft({ outputDirectory: event.target.value })}
           />
         </Form.Item>
 
-        <Form.Item label="启用历史记录" extra="关闭后停止新增，已有记录仍可访问。">
+        <Form.Item label="启用历史记录" extra="关闭后不再写入历史">
           <Switch
             checked={draft.historyEnabled}
             disabled={isBusy}
@@ -326,7 +324,7 @@ export function SettingsPage({
         onCancel={() => setIsResetOpen(false)}
         afterClose={() => resetTriggerRef.current?.focus()}
       >
-        当前草稿将被应用默认设置替换，用户另存的文件不受影响。
+        草稿会被默认值替换。
       </Modal>
     </div>
   );

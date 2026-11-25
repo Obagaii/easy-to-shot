@@ -48,10 +48,10 @@ const sourceLabels: Record<string, string> = {
 };
 
 const errorMessages: Record<string, string> = {
-  not_found: '记录不存在，请刷新后重试。',
-  clipboard_write_failed: '复制失败，请重试。',
+  not_found: '记录不存在。',
+  clipboard_write_failed: '剪贴板写入失败。',
   directory_not_writable: '输出目录不可写。',
-  queue_full: '任务较多，请稍后重试。',
+  queue_full: '任务队列已满。',
 };
 
 function sourceLabel(source: string): string {
@@ -70,12 +70,12 @@ function formatBytes(value: number): string {
 }
 
 function feedbackMessage(feedback: TaskFeedback): string {
-  if (feedback.state === 'busy') return `${feedback.action}处理中…`;
-  if (feedback.state === 'succeeded') return `${feedback.action}成功`;
-  if (feedback.state === 'cancelled') return `${feedback.action}已取消，页面保持不变`;
+  if (feedback.state === 'busy') return `${feedback.action}中`;
+  if (feedback.state === 'succeeded') return `${feedback.action}完成`;
+  if (feedback.state === 'cancelled') return `${feedback.action}已取消`;
   const detail = feedback.errorCode
     ? errorMessages[feedback.errorCode] ?? feedback.errorCode
-    : '请重试';
+    : '未完成';
   return `${feedback.action}失败：${detail}`;
 }
 
@@ -98,7 +98,7 @@ function PreviewImage({ item, variant }: PreviewImageProps) {
   if (state === 'failed') {
     return (
       <div className={`preview-fallback preview-fallback-${variant}`} role="status">
-        <Typography.Text type="secondary">预览不可用</Typography.Text>
+        <span>无预览</span>
         <Button
           size="small"
           onClick={() => {
@@ -218,7 +218,7 @@ export function HistoryPage({
   return (
     <div className="history-page" ref={pageRef} tabIndex={-1}>
       <div className="history-toolbar">
-        <Typography.Text type="secondary">共 {items.length} 条记录</Typography.Text>
+        <Typography.Text type="secondary">{items.length} 条</Typography.Text>
         <Button
           danger
           disabled={items.length === 0 || isBusy}
@@ -305,17 +305,13 @@ export function HistoryPage({
       >
         {selectedItem && (
           <>
+            <div className="preview-meta">
+              <span>{formatTimestamp(selectedItem.createdAtUtc)}</span>
+              <span>{selectedItem.widthPx} × {selectedItem.heightPx}</span>
+              <span>{formatBytes(selectedItem.byteSize)}</span>
+              <span>{sourceLabel(selectedItem.source)}</span>
+            </div>
             <PreviewImage item={selectedItem} variant="full" />
-            <Typography.Paragraph>
-              记录 {selectedItem.historyItemId}
-              <br />
-              时间 {formatTimestamp(selectedItem.createdAtUtc)}
-              <br />
-              像素 {selectedItem.widthPx} × {selectedItem.heightPx} · 大小{' '}
-              {formatBytes(selectedItem.byteSize)}
-              <br />
-              来源 {sourceLabel(selectedItem.source)}
-            </Typography.Paragraph>
           </>
         )}
       </Drawer>
@@ -332,7 +328,7 @@ export function HistoryPage({
         }
         onCancel={() => setIsConfirmOpen(false)}
       >
-        删除后无法恢复，用户另存的文件不受影响。
+        删除后无法恢复。
       </Modal>
 
       <Modal
@@ -344,7 +340,7 @@ export function HistoryPage({
         onOk={() => void runTask('清空', onClear)}
         onCancel={() => setIsClearConfirmOpen(false)}
       >
-        清空后无法恢复，用户另存的文件不受影响。
+        清空后无法恢复。
       </Modal>
     </div>
   );
