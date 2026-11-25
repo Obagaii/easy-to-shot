@@ -43,6 +43,7 @@ class AnnotationCanvas(QWidget):
     cancelled = Signal()
     copy_requested = Signal()
     save_requested = Signal()
+    pin_requested = Signal()
 
     def __init__(
         self,
@@ -78,6 +79,7 @@ class AnnotationCanvas(QWidget):
         self._toolbar.delete_requested.connect(self._delete_selected)
         self._toolbar.copy_requested.connect(self._request_copy)
         self._toolbar.save_requested.connect(self._request_save)
+        self._toolbar.pin_requested.connect(self._request_pin)
         self._toolbar.text_accepted.connect(self._accept_text)
         self._toolbar.text_cancelled.connect(self._cancel_text)
         self._toolbar.text_style_changed.connect(self._update_text_style)
@@ -259,6 +261,8 @@ class AnnotationCanvas(QWidget):
             or event.matches(QKeySequence.StandardKey.SaveAs)
         ):
             self._request_save()
+        elif event.matches(QKeySequence.StandardKey.Print):
+            self._request_pin()
         elif event.key() == Qt.Key.Key_Delete:
             self._delete_selected()
         else:
@@ -528,6 +532,10 @@ class AnnotationCanvas(QWidget):
     def _request_save(self) -> None:
         if self._gesture is None:
             self.save_requested.emit()
+
+    def _request_pin(self) -> None:
+        if self._gesture is None:
+            self.pin_requested.emit()
 
     def _refresh(self) -> None:
         can_edit = self._editor is None

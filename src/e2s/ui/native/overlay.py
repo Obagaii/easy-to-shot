@@ -1,4 +1,4 @@
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal, SignalInstance
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -40,6 +40,7 @@ class CaptureOverlay(QWidget):
     cancelled = Signal()
     copy_requested = Signal(object)
     save_requested = Signal(object)
+    pin_requested = Signal(object)
 
     def __init__(self, session: CaptureSession) -> None:
         super().__init__(
@@ -70,6 +71,10 @@ class CaptureOverlay(QWidget):
         self.setGeometry(self._frame.geometry_dip)
         self.showFullScreen()
         self.reactivate()
+
+    def selection_origin(self, selection: SelectionRect) -> QPoint:
+        """Return the global Qt desktop position of the selection's top-left pixel."""
+        return self.mapToGlobal(self._selection_on_screen(selection).topLeft().toPoint())
 
     def reactivate(self) -> None:
         self.raise_()
@@ -256,12 +261,13 @@ class CaptureOverlay(QWidget):
         self._canvas = canvas
         canvas.installEventFilter(self)
         canvas.cancelled.connect(self.close)
-        canvas.copy_requested.connect(lambda: self._request_output(is_save=False))
-        canvas.save_requested.connect(lambda: self._request_output(is_save=True))
+        canvas.copy_requested.connect(lambda: self._request_output(self.copy_requested))
+        canvas.save_requested.connect(lambda: self._request_output(self.save_requested))
+        canvas.pin_requested.connect(lambda: self._request_output(self.pin_requested))
         canvas.setGeometry(self.rect())
         canvas.show()
 
-    def _request_output(self, *, is_save: bool) -> None:
+    def _request_output(self, requested: SignalInstance) -> None:
         if self._drag is not None:
             return
         try:
@@ -271,7 +277,7 @@ class CaptureOverlay(QWidget):
                 str(error) if isinstance(error, CaptureError) else "内存不足，无法生成截图。"
             )
             return
-        (self.save_requested if is_save else self.copy_requested).emit(snapshot)
+        requested.emit(snapshot)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.cancelled.emit()

@@ -4,7 +4,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QHBoxLayout,
-
     QToolButton,
     QVBoxLayout,
 )
@@ -34,6 +33,7 @@ class AnnotationToolbar(QFrame):
     delete_requested = Signal()
     copy_requested = Signal()
     save_requested = Signal()
+    pin_requested = Signal()
     text_accepted = Signal()
     text_cancelled = Signal()
 
@@ -118,6 +118,7 @@ class AnnotationToolbar(QFrame):
         self._copy = self._add_button(options, "复制", self.copy_requested, "Ctrl+C")
         self._copy.setObjectName("copyAnnotation")
         self._save = self._add_button(options, "另存", self.save_requested, "Ctrl+S")
+        self._pin = self._add_button(options, "贴图", self.pin_requested, "Ctrl+P")
         self.set_tool(Tool.SELECT)
         self.set_text_editing(False)
         self.set_history(False, False)
@@ -162,6 +163,7 @@ class AnnotationToolbar(QFrame):
         self._text_cancel.setVisible(is_editing)
         self._copy.setEnabled(not is_editing)
         self._save.setEnabled(not is_editing)
+        self._pin.setEnabled(not is_editing)
 
     def set_element_selected(self, is_selected: bool) -> None:
         self._delete.setEnabled(is_selected)
