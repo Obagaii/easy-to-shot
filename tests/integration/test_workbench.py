@@ -211,3 +211,61 @@ def test_history_filters_selection_pagination_and_clear(app: QApplication, tmp_p
         assert window.history.store.count() == 0
     finally:
         window.close()
+
+
+def test_history_thumbnail_opens_preview_and_switches_screen(app: QApplication, tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from PySide6.QtCore import QPointF, QRect, Qt
+    from PySide6.QtGui import QColor, QEnterEvent, QImage
+    from PySide6.QtTest import QTest
+
+    from e2s.app.capture_output import to_service_snapshot
+    from e2s.capture.geometry import SelectionRect
+    from e2s.capture.history_session import serialize_session
+    from e2s.capture.service import CaptureFrame
+    from e2s.capture.session import CaptureSession, CaptureSource
+    from e2s.output.ports import TaskResult, TaskState
+    from e2s.ui.native.history_preview import HistoryPreview, HistoryThumbnail
+
+    window = Workbench(create_app_icon(), tmp_path)
+    image = QImage(120, 80, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("white"))
+    image.setPixelColor(2, 2, QColor("red"))
+    session = CaptureSession(CaptureFrame("display", QRect(0, 0, 120, 80), image), CaptureSource.TRAY)
+    session.set_selection(SelectionRect(20, 20, 100, 60))
+    snapshot = replace(to_service_snapshot(session.create_snapshot()), history_data=serialize_session(session))
+    window.history.record_success(snapshot, TaskResult(snapshot.operation_id, TaskState.SUCCEEDED), "copy")
+    window.refresh_history()
+    page = window._history_page_widget
+    window._change_page(1)
+    window.show()
+    app.processEvents()
+    try:
+        thumbnail = next(widget for widget in page.findChildren(HistoryThumbnail) if widget.isVisible())
+        point = QPointF(thumbnail.rect().center())
+        app.sendEvent(thumbnail, QEnterEvent(point, point, QPointF(thumbnail.mapToGlobal(point.toPoint()))))
+        assert thumbnail._hovered
+        QTest.mouseClick(thumbnail, Qt.MouseButton.LeftButton)
+        app.processEvents()
+        preview = window.findChild(HistoryPreview, "historyPreview")
+        assert preview is not None and preview.isVisible()
+        assert preview._view._image.size() == session.create_snapshot().to_image().size()
+        preview._screen_button.click()
+        assert preview._view._image.size() == image.size()
+        assert preview._view._image.toImage().pixelColor(2, 2) == QColor("red")
+        preview._result_button.click()
+        assert preview._view._image.size() == session.create_snapshot().to_image().size()
+        preview.close()
+
+        legacy = OutputSnapshot("old", "old", 1, 1, 1, bytes([255, 0, 0, 255]))
+        window.history.record_success(legacy, TaskResult("old", TaskState.SUCCEEDED), "save")
+        page.refresh()
+        entry = next(item for item in page._entries if item.session_id == "old")
+        page._preview(entry)
+        preview = next(dialog for dialog in window.findChildren(HistoryPreview) if dialog.isVisible())
+        assert not preview._screen_button.isEnabled()
+        assert preview._screen_button.toolTip()
+        preview.close()
+    finally:
+        window.close()

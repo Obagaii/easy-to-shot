@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 
-from PySide6.QtCore import QDate, QSize, Qt, Signal
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication, QDateEdit, QHBoxLayout, QLabel, QMenu, QMessageBox, QScrollArea,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import CardWidget, CheckBox, ComboBox, PushButton
 
 from e2s.storage.history import HistoryService, HistoryStatus
+from e2s.ui.native.history_preview import HistoryPreview, HistoryThumbnail, load_history_screen
 
 
 _SOURCE_LABELS = {"copy": "复制到剪贴板", "save": "保存为文件", "pin": "固定到屏幕"}
@@ -147,14 +148,9 @@ class HistoryPage(QWidget):
         card = CardWidget()
         row = QHBoxLayout(card)
         row.setContentsMargins(16, 14, 16, 14)
-        preview = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
-        preview.setFixedSize(160, 100)
         image = QPixmap(str(self._history.store.image_path(entry)))
-        if image.isNull():
-            preview.setText("图片不可用")
-        else:
-            preview.setPixmap(image.scaled(QSize(160, 100), Qt.AspectRatioMode.KeepAspectRatio,
-                                           Qt.TransformationMode.SmoothTransformation))
+        preview = HistoryThumbnail(image)
+        preview.clicked.connect(lambda: self._preview(entry))
         row.addWidget(preview)
         details = QVBoxLayout()
         try:
@@ -208,6 +204,15 @@ class HistoryPage(QWidget):
         self._page += offset
         self._render()
         self._scroll.verticalScrollBar().setValue(0)
+
+    def _preview(self, entry) -> None:
+        result = QPixmap(str(self._history.store.image_path(entry)))
+        if result.isNull():
+            QMessageBox.warning(self, "截图历史", "图片文件不可用。")
+            return
+        screen = load_history_screen(self._history.store, entry)
+        dialog = HistoryPreview(result, screen, self.window())
+        dialog.open()
 
     def _copy(self, entry) -> None:
         image = QPixmap(str(self._history.store.image_path(entry)))
