@@ -44,6 +44,7 @@ from e2s.ui.native.region_recording import RegionRecording
 from e2s.ui.native.scrolling_capture import ScrollingCapture
 from e2s.ui.native.tray import Tray
 from e2s.ui.native.workbench import Workbench
+from e2s.ui.native.shortcut_dialog import ShortcutDialog
 
 _OutputWindow = CaptureOverlay | PinnedImage | ScrollingCapture
 type _OcrKey = tuple[SelectionRect, bytes]
@@ -150,6 +151,8 @@ class AppController(QObject):
 
     @Slot()
     def start_capture(self, source: CaptureSource = CaptureSource.HOTKEY) -> None:
+        if isinstance(QApplication.activeModalWidget(), ShortcutDialog):
+            return
         if self._is_closing:
             return
         if self._capture_screen is not None:
@@ -575,6 +578,3 @@ class AppController(QObject):
     @Slot(QKeySequence)
     def _replace_hotkey(self, sequence: QKeySequence) -> None:
         self._workbench.show_hotkey_state(self._hotkey.replace(sequence))
-
-
-

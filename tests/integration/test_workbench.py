@@ -54,3 +54,102 @@ def test_navigation_and_tray_hotkey_entry_select_the_right_page(
     window.focus_hotkey_settings()
     assert window._pages.currentIndex() == 0
     window.close()
+
+
+def test_configured_shortcuts_apply_to_canvas_and_detect_conflicts(
+    app: QApplication, tmp_path: Path, monkeypatch
+) -> None:
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QWidget
+    from e2s.annotation.document import AnnotationDocument
+    from e2s.annotation.elements import Tool
+    from e2s.storage.shortcuts import shortcut_settings
+    from e2s.ui.native import annotation_toolbar
+    from e2s.ui.native.canvas import AnnotationCanvas
+
+    window = Workbench(create_app_icon(), tmp_path)
+    assert window._apply_shortcuts("tool/arrow", ("Ctrl+K", "6")) == ""
+    assert "箭头" in window._apply_shortcuts("tool/pen", ("Ctrl+K",))
+    assert window._apply_shortcuts("tool/pen", ("Delete",))
+    assert window._apply_shortcuts("tool/pen", ("Esc",))
+    monkeypatch.setattr(annotation_toolbar, "shortcut_settings", lambda: shortcut_settings(tmp_path))
+    image = QImage(120, 80, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("white"))
+    parent = QWidget()
+    canvas = AnnotationCanvas(AnnotationDocument(image), QRectF(0, 0, 120, 80), parent)
+    canvas.setGeometry(0, 0, 120, 80)
+    parent.show()
+    canvas.setFocus()
+    app.processEvents()
+    QTest.keyClick(canvas, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
+    assert canvas._tool == Tool.ARROW
+    assert "Ctrl+K / 6" in canvas._toolbar._buttons[Tool.ARROW].toolTip()
+    QTest.keyClick(canvas, Qt.Key.Key_V)
+    QTest.keyClick(canvas, Qt.Key.Key_2)
+    assert canvas._tool == Tool.SELECT
+    QTest.keyClick(canvas, Qt.Key.Key_6)
+    assert canvas._tool == Tool.ARROW
+    parent.close()
+    window.close()
+
+
+def test_shortcut_dialog_saves_multiple_bindings_and_allows_removing_them(
+    app: QApplication, tmp_path: Path
+) -> None:
+    from PySide6.QtWidgets import QDialog
+    from e2s.storage.shortcuts import load_shortcuts
+    from e2s.ui.native.shortcut_dialog import ShortcutDialog
+
+    window = Workbench(create_app_icon(), tmp_path)
+    dialog = ShortcutDialog(
+        "箭头", ("2",), lambda keys: window._apply_shortcuts("tool/arrow", keys), window
+    )
+    dialog._add_entry("Ctrl+K")
+    dialog._confirm()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert load_shortcuts(window.settings, "tool/arrow", ()) == ("2", "Ctrl+K")
+    dialog = ShortcutDialog(
+        "箭头", ("2", "Ctrl+K"),
+        lambda keys: window._apply_shortcuts("tool/arrow", keys), window,
+    )
+    while dialog._rows:
+        dialog._remove_entry(dialog._rows[0], dialog._buttons[0])
+    dialog._confirm()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert load_shortcuts(window.settings, "tool/arrow", ("2",)) == ()
+    window.close()
+
+
+def test_shortcut_recorder_captures_keys_and_preserves_cancel(app: QApplication) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QWidget
+    from e2s.ui.native.shortcut_dialog import ShortcutDialog
+
+    saved = []
+    parent = QWidget()
+    dialog = ShortcutDialog("箭头", ("2",), lambda values: saved.append(values) or "", parent)
+    dialog.show()
+    app.processEvents()
+    dialog._buttons[0].click()
+    assert not dialog._confirm_button.isEnabled()
+    assert not dialog._add.isEnabled()
+    QTest.keyClick(dialog, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
+    assert dialog._buttons[0].text() == "Ctrl+K"
+    assert dialog._rows[0].action.isEnabled()
+    dialog._rows[0].action.click()
+    assert dialog._confirm_button.isEnabled()
+    dialog._add.click()
+    QTest.keyClick(dialog, Qt.Key.Key_F6)
+    dialog._rows[1].action.click()
+    dialog._confirm_button.click()
+    assert saved == [("Ctrl+K", "F6")]
+    second = ShortcutDialog("箭头", ("2",), lambda values: saved.append(values) or "", parent)
+    second.show()
+    second._buttons[0].click()
+    QTest.keyClick(second, Qt.Key.Key_F7)
+    second.reject()
+    assert saved == [("Ctrl+K", "F6")]
+    parent.close()

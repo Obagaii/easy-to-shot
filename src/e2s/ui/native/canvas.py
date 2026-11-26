@@ -386,8 +386,12 @@ class AnnotationCanvas(QWidget):
                 self._finish_color_sampling(None)
             elif self._editor is not None:
                 self._cancel_text()
-            else:
+            elif self._gesture is not None:
                 self._cancel()
+            else:
+                binding = self._shortcuts.get(QKeySequence(event.keyCombination()))
+                if binding is not None:
+                    self._activate_shortcut(binding[1])
             event.accept()
             return
         if self._can_use_shortcuts() and not event.isAutoRepeat():

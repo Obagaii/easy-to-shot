@@ -6,7 +6,7 @@ from PySide6.QtGui import QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from qfluentwidgets import (
@@ -20,6 +20,9 @@ from e2s.platform.windows.credentials import (
 )
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, HotkeyError, HotkeyState
 from e2s.storage.history import HistoryService, HistoryStatus, HistoryStore
+from e2s.storage.shortcuts import canonical_shortcut, load_shortcuts, save_shortcuts
+from e2s.ui.native.annotation_toolbar import _ACTION_COMMANDS, _TOOL_COMMANDS
+from e2s.ui.native.shortcut_dialog import ShortcutDialog
 
 _HOTKEY_MESSAGES = {
     HotkeyError.INVALID: "请输入包含 Ctrl、Shift 或 Alt 的单个组合键。",
@@ -125,25 +128,101 @@ class Workbench(QMainWindow):
         return card, layout
 
     def _hotkey_page(self) -> QWidget:
-        page, layout = self._page("全局热键", "设置快捷键，在任意界面快速开始截图。")
-        card, content = self._card("截图快捷键", "按下组合键后点击应用；如有冲突，将保留原快捷键。")
-        row = QHBoxLayout()
-        self._shortcut = QKeySequenceEdit(QKeySequence(self.saved_hotkey()))
-        self._shortcut.setMaximumSequenceLength(1)
-        self._shortcut.setClearButtonEnabled(True)
-        self._shortcut.setAccessibleName("截图热键")
-        button = PrimaryPushButton("应用热键")
-        button.clicked.connect(lambda: self.hotkey_requested.emit(self._shortcut.keySequence()))
-        row.addWidget(self._shortcut, 1)
-        row.addWidget(button)
-        content.addLayout(row)
-        self._hotkey_status = QLabel(wordWrap=True)
+        page, layout = self._page("快捷键", "配置全局截图热键和截图窗口内的工具快捷键。")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget(objectName="content")
+        rows = QVBoxLayout(body)
+        rows.setContentsMargins(0, 0, 8, 0)
+        rows.setSpacing(10)
+        self._shortcut_buttons = {}
+        self._shortcut_definitions = {
+            **{f"tool/{tool.value}": command for tool, command in _TOOL_COMMANDS.items()},
+            **{f"action/{name}": command for name, command in _ACTION_COMMANDS.items()},
+        }
+        rows.addWidget(QLabel("全局快捷键", objectName="section"))
+        rows.addWidget(QLabel("在任何应用中启动截图", objectName="hint"))
+        rows.addWidget(self._shortcut_row("capture", "截图"))
+        self._hotkey_status = QLabel(wordWrap=True, objectName="hint")
         self._hotkey_feedback = QLabel(wordWrap=True, objectName="hint")
-        content.addWidget(self._hotkey_status)
-        content.addWidget(self._hotkey_feedback)
-        layout.addWidget(card)
-        layout.addStretch()
+        rows.addWidget(self._hotkey_status)
+        rows.addWidget(self._hotkey_feedback)
+        rows.addSpacing(16)
+        rows.addWidget(QLabel("截图窗口快捷键", objectName="section"))
+        rows.addWidget(QLabel("框选完成后使用；同一功能可设置多个按键。", objectName="hint"))
+        for key, command in self._shortcut_definitions.items():
+            rows.addWidget(self._shortcut_row(key, command.label))
+        rows.addStretch()
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+        self._refresh_shortcut_buttons()
         return page
+
+    def _shortcut_row(self, key: str, label: str) -> QWidget:
+        card = CardWidget()
+        row = QHBoxLayout(card)
+        row.setContentsMargins(18, 10, 18, 10)
+        row.addWidget(QLabel(label), 1)
+        button = PushButton()
+        button.setAccessibleName(f"配置{label}快捷键")
+        button.clicked.connect(lambda: self._edit_shortcuts(key, label))
+        row.addWidget(button)
+        self._shortcut_buttons[key] = button
+        return card
+
+    def _refresh_shortcut_buttons(self) -> None:
+        self._shortcut_buttons["capture"].setText(self.saved_hotkey())
+        for key, command in self._shortcut_definitions.items():
+            values = load_shortcuts(self.settings, key, command.keys)
+            self._shortcut_buttons[key].setText("  /  ".join(values) if values else "未设置")
+
+    def _edit_shortcuts(self, key: str, label: str) -> None:
+        is_global = key == "capture"
+        values = (self.saved_hotkey(),) if is_global else load_shortcuts(
+            self.settings, key, self._shortcut_definitions[key].keys
+        )
+        dialog = ShortcutDialog(
+            label, values, lambda keys: self._apply_shortcuts(key, keys), self, single=is_global
+        )
+        dialog.exec()
+        self._refresh_shortcut_buttons()
+
+    def _apply_shortcuts(self, key: str, values: tuple[str, ...]) -> str:
+        if key == "capture":
+            if len(values) != 1:
+                return "全局截图需要设置一个快捷键。"
+            requested = canonical_shortcut(values[0])
+            for other, command in self._shortcut_definitions.items():
+                if requested in load_shortcuts(self.settings, other, command.keys):
+                    return f"该快捷键已用于截图窗口的“{command.label}”。"
+            self._last_hotkey_error = ""
+            self.hotkey_requested.emit(QKeySequence(values[0]))
+            return self._last_hotkey_error
+
+        normalized = [canonical_shortcut(value) for value in values]
+        if any(not value for value in normalized):
+            return "请输入有效的快捷键。"
+        aliases = lambda value: "Enter" if value in ("Return", "Num+Enter") else value
+        comparable = [aliases(value) for value in normalized]
+        if aliases(canonical_shortcut(self.saved_hotkey())) in comparable:
+            return "该快捷键已用于全局截图。"
+        if len(set(comparable)) != len(comparable):
+            return "存在重复的快捷键。"
+        reserved = {"Del", "Alt+C", "[", "]", "Tab", "Up", "Down", "Left", "Right",
+                    "Shift+Up", "Shift+Down", "Shift+Left", "Shift+Right"}
+        if any(value in reserved or ("Esc" in value and key != "action/cancel") for value in normalized):
+            return "该按键用于截图窗口的其他操作，请选择其他按键。"
+        for other, command in self._shortcut_definitions.items():
+            if other == key:
+                continue
+            existing = load_shortcuts(self.settings, other, command.keys)
+            if set(comparable) & {aliases(canonical_shortcut(value)) for value in existing}:
+                return f"该快捷键已用于“{command.label}”。"
+        save_shortcuts(self.settings, key, tuple(normalized))
+        if self.settings.status() != QSettings.Status.NoError:
+            return "保存失败，请检查应用数据目录的写入权限。"
+        return ""
 
     def _history_page(self) -> QWidget:
         page, layout = self._page("截图历史", "查看成功复制、保存或贴图的截图。")
@@ -316,10 +395,12 @@ class Workbench(QMainWindow):
 
     def focus_hotkey_settings(self) -> None:
         self._change_page(0)
-        self._shortcut.setFocus()
+        self._shortcut_buttons["capture"].setFocus()
 
     def show_hotkey_state(self, state: HotkeyState) -> None:
         self._hotkey_status.setText(f"当前热键：{state.active}" if state.active else "当前未注册截图热键")
-        self._hotkey_feedback.setText(_HOTKEY_MESSAGES.get(state.error, ""))
+        self._last_hotkey_error = _HOTKEY_MESSAGES.get(state.error, "")
+        self._hotkey_feedback.setText(self._last_hotkey_error)
+        self._refresh_shortcut_buttons()
         if state.active and state.error is None:
             self.settings.setValue("hotkey/capture", state.active)

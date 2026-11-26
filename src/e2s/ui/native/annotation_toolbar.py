@@ -11,6 +11,7 @@ from e2s.ui.native.annotation_controls import (
     describe_control,
 )
 from e2s.ui.native.toolbar_icons import toolbar_icon
+from e2s.storage.shortcuts import load_shortcuts, shortcut_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +68,7 @@ _SEPARATOR_WIDTH = 8
 
 
 def describe_button(button: QToolButton, command: Command) -> None:
-    hint = f"{command.label}（{' / '.join(command.keys)}）"
+    hint = f"{command.label}（{' / '.join(command.keys)}）" if command.keys else command.label
     describe_control(button, hint)
     button.setAccessibleName(command.label)
     button.setAccessibleDescription(hint)
@@ -84,6 +85,7 @@ class AnnotationToolbar(QFrame):
         self.setAccessibleName("录像标注工具栏" if recording else "截图工具栏")
         self._groups = _RECORDING_GROUPS if recording else _GROUPS
         self._recording = recording
+        self._shortcut_settings = shortcut_settings()
         self.setStyleSheet(CAPTURE_CONTROLS_STYLE)
         self._rows = QVBoxLayout(self)
         self._rows.setContentsMargins(_MARGINS, 5, _MARGINS, 5)
@@ -121,14 +123,19 @@ class AnnotationToolbar(QFrame):
 
     def shortcuts(self) -> list[tuple[tuple[str, ...], Callable[[], None]]]:
         tools = [
-            (command.keys, lambda tool=tool: self.activate_tool(tool))
+            (self._keys(f"tool/{tool.value}", command), lambda tool=tool: self.activate_tool(tool))
             for tool, command in _TOOL_COMMANDS.items() if tool in self._buttons
         ]
         actions = [
-            (command.keys, self._action_buttons[name].click)
+            (self._keys(f"action/{name}", command), self._action_buttons[name].click)
             for name, command in _ACTION_COMMANDS.items() if name in self._action_buttons
         ]
         return [*tools, *actions]
+
+    def _keys(self, name: str, command: Command) -> tuple[str, ...]:
+        return command.keys if self._recording else load_shortcuts(
+            self._shortcut_settings, name, command.keys
+        )
 
     def activate_tool(self, tool: Tool) -> None:
         self.tool_changed.emit(self._variants.get(tool, tool))
@@ -197,12 +204,14 @@ class AnnotationToolbar(QFrame):
             button.setIcon(toolbar_icon(item.value, primary=True))
             button.setCheckable(True)
             button.clicked.connect(lambda: self.activate_tool(item))
-            describe_button(button, _TOOL_COMMANDS[item])
+            command = _TOOL_COMMANDS[item]
+            describe_button(button, Command(command.label, self._keys(f"tool/{item.value}", command)))
             self._buttons[item] = button
         else:
             button.setIcon(toolbar_icon(item))
             button.clicked.connect(lambda: self.action_requested.emit(item))
             command = _ACTION_COMMANDS[item]
+            command = Command(command.label, self._keys(f"action/{item}", command))
             if self._recording and item == "cancel":
                 command = Command("返回桌面操作", command.keys)
             describe_button(button, command)
