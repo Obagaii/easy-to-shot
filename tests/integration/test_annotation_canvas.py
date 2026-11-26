@@ -162,7 +162,8 @@ def test_toolbar_exposes_only_requested_tools_and_shortcuts(canvas) -> None:
         Tool.TEXT, Tool.WATERMARK, Tool.RECT_HIGHLIGHT, Tool.ERASER,
     )
     assert tuple(toolbar._action_buttons) == (
-        "undo", "redo", "ocr", "barcode", "record", "pin", "scroll", "save", "cancel", "copy"
+        "undo", "redo", "ocr", "translate_text", "barcode", "record", "pin", "scroll", "save",
+        "cancel", "copy"
     )
     for button in (*toolbar._buttons.values(), *toolbar._action_buttons.values()):
         assert button.accessibleName() in button.property("alt")

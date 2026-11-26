@@ -36,6 +36,7 @@ _ACTION_COMMANDS = {
     "undo": Command("撤销", ("Ctrl+Z",)),
     "redo": Command("重做", ("Ctrl+Y",)),
     "ocr": Command("识别文字", ("Ctrl+O",)),
+    "translate_text": Command("文本翻译", ()),
     "barcode": Command("扫描二维码", ("Ctrl+Q",)),
     "record": Command("录像", ("Ctrl+R",)),
     "pin": Command("固定到屏幕", ("Ctrl+F",)),
@@ -49,7 +50,7 @@ _GROUPS = (
     (Tool.RECTANGLE, Tool.ELLIPSE, Tool.ARROW, Tool.PEN, Tool.TEXT, Tool.WATERMARK,
      Tool.RECT_HIGHLIGHT, Tool.ERASER),
     ("undo", "redo"),
-    ("ocr", "barcode", "record", "pin", "scroll", "save"),
+    ("ocr", "translate_text", "barcode", "record", "pin", "scroll", "save"),
     ("cancel", "copy"),
 )
 _RECORDING_GROUPS = (

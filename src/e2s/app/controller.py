@@ -85,7 +85,7 @@ class AppController(QObject):
         self._pinned_images: set[PinnedImage] = set()
         self._pending_save: tuple[OutputSnapshot, _OutputWindow] | None = None
         self._recognizer = ScreenshotRecognizer()
-        self._ocr_request: tuple[CaptureOverlay, _OcrKey] | None = None
+        self._ocr_request: tuple[CaptureOverlay, _OcrKey, bool] | None = None
         self._ocr_cache: dict[_OcrKey, tuple[OcrLine, ...]] = {}
         self._save_pool = QThreadPool(self)
         self._save_finished.connect(self._on_save_finished, Qt.ConnectionType.QueuedConnection)
@@ -243,21 +243,23 @@ class AppController(QObject):
         if name == "barcode":
             overlay.set_output_feedback("正在扫描二维码…", is_pending=True)
             self._save_pool.start(lambda: self._scan_snapshot(overlay, snapshot))
-        elif name == "ocr":
-            self._start_ocr(snapshot, overlay)
+        elif name in ("ocr", "translate_text"):
+            self._start_ocr(snapshot, overlay, auto_translate=name == "translate_text")
         elif name in ("scroll", "record"):
             self._start_live_capture(name, snapshot, overlay, screen)
 
-    def _start_ocr(self, snapshot: OutputSnapshot, overlay: CaptureOverlay) -> None:
+    def _start_ocr(
+        self, snapshot: OutputSnapshot, overlay: CaptureOverlay, *, auto_translate: bool = False
+    ) -> None:
         key = (snapshot.selection, sha256(snapshot.rgba_pixels).digest())
         cached = self._ocr_cache.get(key)
         if cached is not None:
-            self._show_ocr_results(overlay, snapshot, cached)
+            self._show_ocr_results(overlay, snapshot, cached, auto_translate=auto_translate)
             return
         if self._ocr_request is not None:
             overlay.set_output_feedback("上一项文字识别仍在运行，请稍后重试。")
             return
-        self._ocr_request = overlay, key
+        self._ocr_request = overlay, key, auto_translate
         overlay.set_output_feedback("正在本地识别文字…", is_pending=True)
         self._save_pool.start(lambda: self._recognize_snapshot(snapshot))
 
@@ -276,22 +278,23 @@ class AppController(QObject):
         request, self._ocr_request = self._ocr_request, None
         if request is None:
             return
-        overlay, key = request
+        overlay, key, auto_translate = request
         if self._overlay is not overlay:
             return
         if message:
             overlay.set_output_feedback(message)
             return
         self._ocr_cache[key] = lines
-        self._show_ocr_results(overlay, snapshot, lines)
+        self._show_ocr_results(overlay, snapshot, lines, auto_translate=auto_translate)
 
     def _show_ocr_results(
-        self, overlay: CaptureOverlay, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...]
+        self, overlay: CaptureOverlay, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...],
+        *, auto_translate: bool = False
     ) -> None:
         overlay.set_output_feedback("" if lines else "选区内未识别到文字。")
         if lines:
             language = self._workbench.settings.value("translation/language", "Simplified Chinese")
-            overlay.show_ocr_results(snapshot, lines, str(language))
+            overlay.show_ocr_results(snapshot, lines, str(language), auto_translate=auto_translate)
 
     def _scan_snapshot(self, overlay: CaptureOverlay, snapshot: OutputSnapshot) -> None:
         try:

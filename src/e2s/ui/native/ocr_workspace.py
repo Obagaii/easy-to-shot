@@ -140,10 +140,10 @@ class OcrWorkspace(QWidget):
         self._show_original = self._button(row, "显示原文", "view_original", self._toggle_original)
         self._edit = self._button(row, "编辑文字", "edit_text", self._toggle_edit)
         self._edit.setCheckable(True)
-        self._translate = self._button(row, "翻译", "translate_text", self._translate_text)
+        self._translate = self._button(row, "翻译", "translate_text", self.start_translation)
         self._language = ComboBox(self._toolbar)
-        for label, language in LANGUAGES:
-            self._language.addItem(label, userData=language)
+        for label, language_code in LANGUAGES:
+            self._language.addItem(label, userData=language_code)
         self._language.setCurrentIndex(max(0, self._language.findData(language)))
         row.addWidget(self._language)
         self._model = ComboBox(self._toolbar)
@@ -220,7 +220,7 @@ class OcrWorkspace(QWidget):
         else:
             self._source_text = self._editor.toPlainText()
 
-    def _translate_text(self) -> None:
+    def start_translation(self) -> None:
         text = self._editor.toPlainText().strip()
         if not text:
             return

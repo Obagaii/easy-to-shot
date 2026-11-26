@@ -959,6 +959,47 @@ def test_ocr_reuses_selection_content_only_within_the_same_capture(
     assert calls == [first_area, blank_area, first_area, first_area]
 
 
+def test_translation_toolbar_recognizes_then_translates_with_cached_results(
+    desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from e2s.capture.stream_translation import StreamingTranslator
+
+    controller, workbench, _, screen = desktop
+    geometry = screen.geometry()
+    image = QImage(geometry.size(), QImage.Format.Format_RGBA8888)
+    image.fill(Qt.GlobalColor.white)
+    monkeypatch.setattr(
+        controller_module, "capture_frame", lambda _: CaptureFrame("translate", geometry, image)
+    )
+    calls = []
+    translations = []
+    lines = (OcrLine("Hello", ((8, 8), (72, 8), (72, 26), (8, 26))),)
+    monkeypatch.setattr(controller._recognizer, "recognize", lambda snapshot: calls.append(snapshot) or lines)
+    monkeypatch.setattr(
+        StreamingTranslator, "translate",
+        lambda self, text, language, model, key: translations.append((text, language, model)),
+    )
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    overlay._set_selection(SelectionRect(10, 10, 270, 170))
+    workbench._language.setCurrentIndex(workbench._language.findData("English"))
+    overlay._canvas._toolbar._action_buttons["translate_text"].click()
+    wait_for(lambda: overlay._ocr_workspace is not None, "automatic translation")
+    assert len(calls) == 1
+    assert translations == [("Hello", "English", "free")]
+    assert not overlay._ocr_workspace._translate.isEnabled()
+    overlay._ocr_workspace.close()
+    overlay._canvas._toolbar._action_buttons["translate_text"].click()
+    assert len(calls) == 1
+    assert len(translations) == 2
+    overlay._ocr_workspace.close()
+    workbench._language.setCurrentIndex(workbench._language.findData("Japanese"))
+    overlay._canvas._toolbar._action_buttons["ocr"].click()
+    assert len(translations) == 2
+    assert overlay._ocr_workspace._editor.toPlainText() == "Hello"
+    assert overlay._ocr_workspace._language.currentData() == "Japanese"
+
+
 def wait_for(check, description: str) -> None:
     for _ in range(1500):
         QApplication.processEvents()

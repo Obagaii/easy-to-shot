@@ -199,7 +199,8 @@ class CaptureOverlay(QWidget):
         self.set_output_feedback("已覆盖到截图，可按 Ctrl+Z 撤销。")
 
     def show_ocr_results(
-        self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], language: str
+        self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], language: str,
+        *, auto_translate: bool = False
     ) -> None:
         if self._session.selection != snapshot.selection:
             self.set_output_feedback("截图选区已变化，请重新识别文字。")
@@ -212,6 +213,8 @@ class CaptureOverlay(QWidget):
         workspace.show()
         workspace.raise_()
         workspace._editor.setFocus()
+        if auto_translate:
+            workspace.start_translation()
 
     def _dismiss_ocr_workspace(self) -> None:
         if self._ocr_workspace is not None:
@@ -498,11 +501,11 @@ class CaptureOverlay(QWidget):
         )
 
     def _request_capture_action(self, name: str) -> None:
-        if name != "ocr":
+        if name not in ("ocr", "translate_text"):
             self._dismiss_ocr_workspace()
         self._request_output(
             lambda snapshot: self.action_requested.emit(name, snapshot),
-            include_text_covers=name != "ocr",
+            include_text_covers=name not in ("ocr", "translate_text"),
         )
 
     def _request_output(
