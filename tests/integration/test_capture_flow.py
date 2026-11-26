@@ -1021,3 +1021,60 @@ def wait_for(check, description: str) -> None:
             return
         sleep(0.01)
     pytest.fail(f"Timed out waiting for {description}.")
+
+
+def test_history_reopens_capture_with_editable_annotations(desktop, monkeypatch) -> None:
+    controller, workbench, _, screen = desktop
+    image = QImage(screen.geometry().size(), QImage.Format.Format_RGBA8888)
+    image.fill(Qt.GlobalColor.white)
+    monkeypatch.setattr(controller_module, "capture_frame", lambda _: CaptureFrame("history", screen.geometry(), image))
+    monkeypatch.setattr(capture_output, "copy_image_to_clipboard", lambda _image: None)
+    workbench.show()
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    selection = SelectionRect(10, 10, image.width() - 20, min(300, image.height() - 20))
+    overlay._set_selection(selection)
+    overlay._session.begin_annotation().add(
+        Stroke(Tool.RECTANGLE, ((30, 30), (100, 80)), "#ff0000", 3)
+    )
+    expected = overlay._session.create_snapshot().rgba_pixels
+    QTest.keyClick(overlay._canvas, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert controller._overlay is None
+    workbench.refresh_history()
+    page = workbench._history_page_widget
+    (entry,) = page._entries
+    assert page._history.store.session_path(entry).is_file()
+    assert page._history.store.session_asset_path(entry.history_item_id, "screen.png").is_file()
+    page._edit(entry)
+    restored = controller._overlay
+    assert restored is not None
+    QApplication.processEvents()
+    assert restored._session.selection == selection
+    canvas = restored._canvas
+    assert canvas.geometry() == restored.rect()
+    assert canvas.rect().contains(restored._selection_on_screen(selection).toAlignedRect())
+    toolbar = canvas._toolbar
+    if canvas.width() >= toolbar.preferred_width + 16:
+        assert toolbar._buttons[Tool.RECTANGLE].width() == 38
+    handle = toolbar._drag_handle
+    local = QPointF(handle.rect().center())
+    start = QPointF(handle.mapToGlobal(local.toPoint()))
+    offset = canvas.width() - toolbar.width() - toolbar.x() - 8
+    for kind, position, button, buttons in (
+        (QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+        (QEvent.Type.MouseMove, start + QPointF(offset, 0), Qt.MouseButton.NoButton,
+         Qt.MouseButton.LeftButton),
+        (QEvent.Type.MouseButtonRelease, start + QPointF(offset, 0), Qt.MouseButton.LeftButton,
+         Qt.MouseButton.NoButton),
+    ):
+        QApplication.sendEvent(handle, QMouseEvent(
+            kind, local, position, button, buttons, Qt.KeyboardModifier.NoModifier,
+        ))
+    assert toolbar.geometry().right() >= canvas.rect().right() - 10
+    assert restored._session.create_snapshot().rgba_pixels == expected
+    assert restored._session.begin_annotation().can_undo
+    restored._session.begin_annotation().undo()
+    assert not restored._session.begin_annotation().elements
+    QTest.keyClick(restored, Qt.Key.Key_Escape)
+    assert controller._overlay is None
+    assert workbench.isVisible()

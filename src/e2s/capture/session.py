@@ -8,6 +8,7 @@ from e2s.annotation.document import AnnotationDocument
 from e2s.annotation.elements import ImagePatch
 from e2s.annotation.renderer import render_annotations
 from e2s.capture.geometry import SelectionRect
+from e2s.capture.history_payload import HistoryPayload
 from e2s.capture.service import CaptureError, CaptureFrame
 
 
@@ -28,6 +29,7 @@ class OutputSnapshot:
     screen_id: str
     selection: SelectionRect
     rgba_pixels: bytes
+    history_data: HistoryPayload | None = None
 
     @property
     def width_px(self) -> int:

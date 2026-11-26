@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -141,6 +142,45 @@ class HistoryStore:
         """返回应用自有图像路径，与用户另存目录隔离。"""
         return self._images_dir / item.image_key
 
+    def session_path(self, item: HistoryItem) -> Path:
+        return self._images_dir / f"{item.history_item_id}.session.json"
+
+    def session_asset_path(self, history_item_id: str, name: str) -> Path:
+        if str(uuid.UUID(history_item_id)) != history_item_id:
+            raise ValueError("Invalid history identifier")
+        if name != "screen.png" and not re.fullmatch(r"patch-[0-9a-f]{64}\.png", name):
+            raise ValueError("Invalid history asset name")
+        return self._images_dir / f"{history_item_id}.assets" / name
+
+    def read_session_asset(self, history_item_id: str, name: str) -> bytes:
+        return self.session_asset_path(history_item_id, name).read_bytes()
+
+    def _remove_session(self, history_item_id: str) -> None:
+        try:
+            if str(uuid.UUID(history_item_id)) != history_item_id:
+                return
+            self.remove_image(f"{history_item_id}.session.json")
+            shutil.rmtree(self._images_dir / f"{history_item_id}.assets", ignore_errors=True)
+        except ValueError:
+            return
+
+    def _write_session(self, history_item_id: str, payload) -> bool:
+        try:
+            directory = self._images_dir / f"{history_item_id}.assets"
+            directory.mkdir()
+            for name, image in payload.assets:
+                path = self.session_asset_path(history_item_id, name)
+                if not self._write_image(str(path.relative_to(self._images_dir)), image):
+                    self._remove_session(history_item_id)
+                    return False
+            if not self._write_image(f"{history_item_id}.session.json", payload.metadata):
+                self._remove_session(history_item_id)
+                return False
+            return True
+        except (OSError, ValueError):
+            self._remove_session(history_item_id)
+            return False
+
     def is_available(self, item: HistoryItem) -> bool:
         return self.image_path(item).is_file()
 
@@ -171,6 +211,8 @@ class HistoryStore:
         image_key = f"{item_id}.png"
         if not self._write_image(image_key, payload):
             return HistoryResult(HistoryStatus.WRITE_FAILED, error_code="image_write_failed")
+        if snapshot.history_data:
+            self._write_session(item_id, snapshot.history_data)
         item = HistoryItem(
             history_item_id=item_id,
             session_id=snapshot.session_id,
@@ -184,6 +226,7 @@ class HistoryStore:
         )
         if not self._insert_item(item):
             self.remove_image(image_key)
+            self._remove_session(item_id)
             concurrent = self._find_duplicate_safe(item.session_id, item.result_revision)
             if concurrent is not None:
                 return HistoryResult(HistoryStatus.DUPLICATE, item=concurrent)
@@ -357,6 +400,7 @@ class HistoryService:
                 )
                 conn.commit()
             self._store.remove_image(str(row[0]))
+            self._store._remove_session(history_item_id)
             return HistoryStatus.DELETED
         except (sqlite3.Error, OSError):
             return HistoryStatus.DATABASE_FAILED
@@ -369,6 +413,7 @@ class HistoryService:
                 conn.commit()
             for item in items:
                 self._store.remove_image(item.image_key)
+                self._store._remove_session(item.history_item_id)
             return HistoryStatus.DELETED
         except (sqlite3.Error, OSError):
             return HistoryStatus.DATABASE_FAILED
@@ -392,6 +437,7 @@ class HistoryService:
                 conn.commit()
             for item in items:
                 self._store.remove_image(item.image_key)
+                self._store._remove_session(item.history_item_id)
             return len(items)
         except (sqlite3.Error, OSError):
             return 0

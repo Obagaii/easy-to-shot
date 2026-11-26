@@ -22,12 +22,14 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPaintEvent,
+    QResizeEvent,
     QPen,
     QScreen,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QWidget
 
+from e2s.capture.history_session import serialize_session
 from e2s.capture.geometry import (
     ResizeHandle,
     ScreenCoordinates,
@@ -111,10 +113,17 @@ class CaptureOverlay(QWidget):
         self.winId()
         self.windowHandle().setScreen(screen)
         self.setGeometry(self._frame.geometry_dip)
+        if self._canvas is None and self._session.selection is not None:
+            self._set_selection(self._session.selection)
         self.showFullScreen()
         if self._canvas is None and QApplication.platformName() == "windows":
             self._start_smart_selection()
         self.reactivate()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if self._canvas is not None:
+            self._canvas.setGeometry(self.rect())
 
     def _start_smart_selection(self) -> None:
         window_id = int(self.winId())
@@ -486,9 +495,9 @@ class CaptureOverlay(QWidget):
         canvas.installEventFilter(self)
         canvas._toolbar.tool_changed.connect(lambda _tool: self._dismiss_ocr_workspace())
         canvas.cancelled.connect(self.close)
-        canvas.copy_requested.connect(lambda: self._request_output(self.copy_requested.emit))
-        canvas.save_requested.connect(lambda: self._request_output(self.save_requested.emit))
-        canvas.pin_requested.connect(lambda: self._request_output(self.pin_requested.emit))
+        canvas.copy_requested.connect(lambda: self._request_output(self.copy_requested.emit, save_history=True))
+        canvas.save_requested.connect(lambda: self._request_output(self.save_requested.emit, save_history=True))
+        canvas.pin_requested.connect(lambda: self._request_output(self.pin_requested.emit, save_history=True))
         canvas.output_requested.connect(self._request_capture_action)
         canvas.setGeometry(self.rect())
         canvas.show()
@@ -509,7 +518,8 @@ class CaptureOverlay(QWidget):
         )
 
     def _request_output(
-        self, requested: Callable[[OutputSnapshot], None], *, include_text_covers: bool = True
+        self, requested: Callable[[OutputSnapshot], None], *, include_text_covers: bool = True,
+        save_history: bool = False
     ) -> None:
         if self._drag is not None:
             return
@@ -520,11 +530,18 @@ class CaptureOverlay(QWidget):
                 str(error) if isinstance(error, CaptureError) else "内存不足，无法生成截图。"
             )
             return
+        output_override = None
         if include_text_covers and self._ocr_workspace is not None:
             workspace = self._ocr_workspace
             if snapshot.selection == workspace._snapshot.selection:
                 image = workspace.output_image()
                 snapshot = replace(snapshot, rgba_pixels=bytes(image.constBits()))
+                output_override = image
+        if save_history:
+            try:
+                snapshot = replace(snapshot, history_data=serialize_session(self._session, output_override))
+            except (ValueError, MemoryError):
+                pass
         requested(snapshot)
 
     def closeEvent(self, event: QCloseEvent) -> None:

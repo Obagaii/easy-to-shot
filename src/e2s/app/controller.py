@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
 from e2s.capture.geometry import SelectionRect, move_selection
+from e2s.capture.history_session import deserialize_session
 from e2s.capture.ocr import OcrError, OcrLine, ScreenshotRecognizer
 from e2s.capture.qr import CodeDetection, scan_codes
 from e2s.capture.service import CaptureError, capture_frame
@@ -111,6 +112,7 @@ class AppController(QObject):
         tray.settings_requested.connect(self._show_hotkey_settings)
         tray.quit_requested.connect(self.quit)
         workbench.capture_requested.connect(lambda: self.start_capture(CaptureSource.WORKBENCH))
+        workbench.history_edit_requested.connect(self._edit_history)
         workbench.hotkey_requested.connect(self._replace_hotkey)
 
     def start(self) -> None:
@@ -188,13 +190,43 @@ class AppController(QObject):
             self._tray.notify(str(error))
             return
 
-        self._overlay = CaptureOverlay(CaptureSession(frame, self._capture_source), self._selector)
+        self._open_session(CaptureSession(frame, self._capture_source))
+
+    def _open_session(self, session: CaptureSession) -> None:
+        self._overlay = CaptureOverlay(session, self._selector)
         self._overlay.cancelled.connect(self._finish_capture)
         self._overlay.copy_requested.connect(self._copy_snapshot)
         self._overlay.save_requested.connect(self._save_snapshot)
         self._overlay.pin_requested.connect(self._pin_snapshot)
         self._overlay.action_requested.connect(self._run_capture_action)
         self._overlay.show_on_screen(self._capture_screen)
+
+    @Slot(object)
+    def _edit_history(self, item) -> None:
+        if self._capture_screen is not None or self._is_closing:
+            return
+        screen = next((screen for screen in self._app.screens()
+                       if screen.name() == item["screen_id"]), None)
+        screen = screen or screen_at_cursor(self._app) or self._app.primaryScreen()
+        try:
+            if screen is None:
+                raise ValueError("No available screen")
+            session = deserialize_session(
+                item["payload"], screen.geometry(),
+                lambda name: self._workbench.history.store.read_session_asset(
+                    item["history_item_id"], name
+                ),
+            )
+        except (ValueError, KeyError, TypeError, OSError):
+            QMessageBox.warning(self._workbench, "截图历史", "无法恢复这条截图的编辑数据。")
+            return
+        self._capture_screen = screen
+        self._capture_source = CaptureSource.WORKBENCH
+        self._previous_window = WindowState(
+            self._workbench.windowState(), self._workbench.isActiveWindow()
+        )
+        self._workbench.hide()
+        self._open_session(session)
 
     @Slot(object)
     def _copy_snapshot(self, snapshot: OutputSnapshot) -> None:

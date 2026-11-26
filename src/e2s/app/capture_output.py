@@ -34,6 +34,7 @@ def to_service_snapshot(snapshot: OutputSnapshot) -> ServiceSnapshot:
         width_px=snapshot.width_px,
         height_px=snapshot.height_px,
         pixels=snapshot.rgba_pixels,
+        history_data=snapshot.history_data,
     )
 
 

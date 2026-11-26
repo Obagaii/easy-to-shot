@@ -21,9 +21,9 @@ def test_successful_output_appears_in_history_and_can_be_copied(
         snapshot = OutputSnapshot("op", "session", 1, 1, 1, bytes([255, 0, 0, 255]))
         controller.output_succeeded.emit(snapshot, TaskResult("op", TaskState.SUCCEEDED), "copy")
         workbench.refresh_history()
-        assert workbench._history_list.count() == 1
-        workbench._history_list.setCurrentRow(0)
-        workbench._copy_history()
+        page = workbench._history_page_widget
+        assert len(page._entries) == 1
+        page._copy(page._entries[0])
         assert app.clipboard().image().pixelColor(0, 0).red() == 255
     finally:
         controller.close()
@@ -173,5 +173,41 @@ def test_about_page_displays_application_icon_and_version(app: QApplication, tmp
         assert about_icon.pixmap() is not None
         assert not about_icon.pixmap().isNull()
         assert all(not icon.pixmap(size, size).isNull() for size in (16, 32, 256))
+    finally:
+        window.close()
+
+
+def test_history_filters_selection_pagination_and_clear(app: QApplication, tmp_path: Path, monkeypatch) -> None:
+    from datetime import datetime, timezone
+
+    from PySide6.QtWidgets import QMessageBox
+    from e2s.output.ports import TaskResult, TaskState
+    from e2s.output.service import OutputSnapshot
+
+    window = Workbench(create_app_icon(), tmp_path)
+    page = window._history_page_widget
+    try:
+        for index in range(10):
+            snapshot = OutputSnapshot(str(index), str(index), 1, 2, 2, bytes([255, 0, 0, 255] * 4))
+            window.history.record_success(snapshot, TaskResult(str(index), TaskState.SUCCEEDED),
+                                          "copy" if index < 6 else "save")
+        page.refresh()
+        assert len(page._entries) == 10
+        assert page._next.isEnabled()
+        page._select_all()
+        page._move_page(1)
+        assert len(page._selected) == 10
+        assert all(checkbox.isChecked() for checkbox in page._cards.values())
+        page._source.setCurrentIndex(page._source.findData("save"))
+        assert len(page._entries) == 4
+        page._date_filter.setChecked(True)
+        page._end.setDate(page._end.date().addDays(-1))
+        assert not page._entries
+        page._date_filter.setChecked(False)
+        monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+        page._delete_selected()
+        assert window.history.store.count() == 0
+        page._clear()
+        assert window.history.store.count() == 0
     finally:
         window.close()

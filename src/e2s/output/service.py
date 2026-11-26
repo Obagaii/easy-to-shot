@@ -6,6 +6,8 @@
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
 
+from e2s.capture.history_payload import HistoryPayload
+
 from .ports import ClipboardWriteError, ClipboardWriter, TaskResult, TaskState
 
 
@@ -23,6 +25,7 @@ class OutputSnapshot:
     height_px: int
     pixels: bytes
     parameters: Mapping[str, object] = field(default_factory=dict)
+    history_data: HistoryPayload | None = None
 
     def __post_init__(self) -> None:
         if self.width_px <= 0 or self.height_px <= 0:

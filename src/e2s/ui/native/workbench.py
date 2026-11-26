@@ -1,11 +1,10 @@
-from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, QStandardPaths, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QLineEdit, QMainWindow, QMessageBox,
     QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -20,9 +19,10 @@ from e2s.platform.windows.credentials import (
     CredentialError, delete_deepseek_key, get_deepseek_key, save_deepseek_key,
 )
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, HotkeyError, HotkeyState
-from e2s.storage.history import HistoryService, HistoryStatus, HistoryStore
+from e2s.storage.history import HistoryService, HistoryStore
 from e2s.storage.shortcuts import canonical_shortcut, load_shortcuts, save_shortcuts
 from e2s.ui.native.annotation_toolbar import _ACTION_COMMANDS, _TOOL_COMMANDS
+from e2s.ui.native.history_page import HistoryPage
 from e2s.ui.native.shortcut_dialog import ShortcutDialog
 
 _HOTKEY_MESSAGES = {
@@ -63,6 +63,7 @@ class ShortcutCard(CardWidget):
 class Workbench(QMainWindow):
     capture_requested = Signal()
     hotkey_requested = Signal(QKeySequence)
+    history_edit_requested = Signal(object)
 
     def __init__(self, icon: QIcon, data_root: Path | None = None) -> None:
         super().__init__()
@@ -236,28 +237,10 @@ class Workbench(QMainWindow):
         return ""
 
     def _history_page(self) -> QWidget:
-        page, layout = self._page("截图历史", "查看成功复制、保存或贴图的截图。")
-        self._history_list = QListWidget(objectName="history")
-        self._history_list.setIconSize(QSize(100, 64))
-        self._history_list.currentItemChanged.connect(self._show_history_preview)
-        self._history_items = {}
-        self._preview = QLabel("选择一条记录查看预览", alignment=Qt.AlignmentFlag.AlignCenter)
-        self._preview.setMinimumHeight(150)
-        self._preview.setWordWrap(True)
-        layout.addWidget(self._history_list, 1)
-        layout.addWidget(self._preview, 1)
-        row = QHBoxLayout()
-        refresh = PushButton("刷新")
-        refresh.clicked.connect(self.refresh_history)
-        copy = PushButton("复制图片")
-        copy.clicked.connect(self._copy_history)
-        delete = PushButton("删除记录")
-        delete.clicked.connect(self._delete_history)
-        row.addWidget(refresh)
-        row.addWidget(copy)
-        row.addWidget(delete)
-        row.addStretch()
-        layout.addLayout(row)
+        page, layout = self._page("截图历史", "查看和管理已完成的截图。")
+        self._history_page_widget = HistoryPage(self.history, page)
+        self._history_page_widget.edit_requested.connect(self.history_edit_requested.emit)
+        layout.addWidget(self._history_page_widget, 1)
         return page
 
     def _ocr_page(self) -> QWidget:
@@ -348,51 +331,7 @@ class Workbench(QMainWindow):
             self._update_key_status()
 
     def refresh_history(self) -> None:
-        self._history_list.clear()
-        self._history_items = {}
-        for entry in self.history.store.list_recent(limit=200):
-            path = self.history.store.image_path(entry)
-            try:
-                stamp = datetime.fromisoformat(entry.created_at_utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                stamp = entry.created_at_utc
-            item = QListWidgetItem(QIcon(str(path)), f"{stamp}   ·   {entry.width_px} × {entry.height_px}   ·   {entry.source}")
-            item.setData(Qt.ItemDataRole.UserRole, entry.history_item_id)
-            self._history_items[entry.history_item_id] = entry
-            self._history_list.addItem(item)
-        self._preview.setText("选择一条记录查看预览" if self._history_items else "暂无截图历史")
-
-    def _selected_history(self):
-        item = self._history_list.currentItem()
-        return self._history_items.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
-
-    def _show_history_preview(self, *_args) -> None:
-        item = self._selected_history()
-        if item is None:
-            self._preview.clear()
-            return
-        pixmap = QPixmap(str(self.history.store.image_path(item)))
-        if pixmap.isNull():
-            self._preview.setText("图片文件不可用")
-        else:
-            self._preview.setPixmap(pixmap.scaled(500, 220, Qt.AspectRatioMode.KeepAspectRatio,
-                                                   Qt.TransformationMode.SmoothTransformation))
-
-    def _copy_history(self) -> None:
-        item = self._selected_history()
-        if item:
-            image = QPixmap(str(self.history.store.image_path(item)))
-            if image.isNull():
-                QMessageBox.warning(self, "截图历史", "图片文件不可用。")
-            else:
-                QApplication.clipboard().setPixmap(image)
-
-    def _delete_history(self) -> None:
-        item = self._selected_history()
-        if item and QMessageBox.question(self, "删除记录", "确定删除这条截图历史吗？") == QMessageBox.StandardButton.Yes:
-            if self.history.delete(item.history_item_id) != HistoryStatus.DELETED:
-                QMessageBox.warning(self, "截图历史", "删除失败，请重试。")
-            self.refresh_history()
+        self._history_page_widget.refresh()
 
     def _update_key_status(self) -> None:
         try:
