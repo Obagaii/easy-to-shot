@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy-to-shot"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Windows 桌面截图工具"
 requires-python = ">=3.13"
 dependencies = [
@@ -26,6 +26,12 @@ test = ["pytest>=9,<10"]
 
 [project.gui-scripts]
 easy-to-shot = "e2s.app.bootstrap:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "e2s.__version__"}
+
+[tool.setuptools.package-data]
+e2s = ["ui/native/assets/*.svg"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

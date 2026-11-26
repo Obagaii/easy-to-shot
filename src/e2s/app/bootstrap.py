@@ -4,6 +4,7 @@ from pathlib import Path
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from e2s import __version__
 from e2s.app.controller import AppController
 from e2s.app.single_instance import SingleInstance, SingleInstanceError
 from e2s.ui.native.tray import Tray, create_app_icon
@@ -14,6 +15,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("EasyToShot")
     app.setApplicationDisplayName("Easy to Shot")
+    app.setApplicationVersion(__version__)
     app.setQuitOnLastWindowClosed(False)
 
     instance = None

@@ -156,3 +156,22 @@ def test_shortcut_recorder_captures_keys_and_preserves_cancel(app: QApplication)
     second.reject()
     assert saved == [("Ctrl+K", "F6")]
     parent.close()
+
+
+def test_about_page_displays_application_icon_and_version(app: QApplication, tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    from e2s import __version__
+
+    icon = create_app_icon()
+    window = Workbench(icon, tmp_path)
+    try:
+        window._navigation.panel.widget("about").click()
+        version = window.findChild(QLabel, "aboutVersion")
+        about_icon = window.findChild(QLabel, "aboutIcon")
+        assert version.text() == f"版本 {__version__}"
+        assert about_icon.pixmap() is not None
+        assert not about_icon.pixmap().isNull()
+        assert all(not icon.pixmap(size, size).isNull() for size in (16, 32, 256))
+    finally:
+        window.close()

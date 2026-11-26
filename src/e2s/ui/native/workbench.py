@@ -14,6 +14,7 @@ from qfluentwidgets import (
     PrimaryPushButton, PushButton,
 )
 
+from e2s import __version__
 from e2s.capture.translation import DEEPSEEK_MODEL
 from e2s.platform.windows.credentials import (
     CredentialError, delete_deepseek_key, get_deepseek_key, save_deepseek_key,
@@ -305,10 +306,35 @@ class Workbench(QMainWindow):
         return page
 
     def _about_page(self) -> QWidget:
-        page, layout = self._page("关于", "了解 Easy to Shot。")
-        card, content = self._card("Easy to Shot", "截图、标注、文字识别与录屏，一处完成。")
-        content.addWidget(QLabel("版本 0.1.0"))
-        content.addWidget(QLabel("Windows 桌面截图工具"))
+        page, layout = self._page("关于", "了解 E2S。")
+        card = CardWidget()
+        content = QVBoxLayout(card)
+        content.setContentsMargins(28, 28, 28, 28)
+        content.setSpacing(18)
+
+        heading = QHBoxLayout()
+        heading.setSpacing(18)
+        icon = QLabel()
+        icon.setObjectName("aboutIcon")
+        icon.setPixmap(self.windowIcon().pixmap(72, 72))
+        icon.setFixedSize(72, 72)
+        heading.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        identity = QVBoxLayout()
+        identity.setSpacing(5)
+        identity.addWidget(QLabel("E2S", objectName="section"))
+        identity.addWidget(QLabel("Easy to Shot", objectName="hint"))
+        version = QLabel(f"版本 {__version__}")
+        version.setObjectName("aboutVersion")
+        identity.addWidget(version)
+        heading.addLayout(identity)
+        heading.addStretch()
+        content.addLayout(heading)
+
+        description = QLabel("轻松捕捉，记录灵感。", wordWrap=True)
+        content.addWidget(description)
+        details = QLabel("截图、标注、文字识别、翻译与录屏，让每一次捕捉更简单。", wordWrap=True)
+        details.setObjectName("hint")
+        content.addWidget(details)
         layout.addWidget(card)
         layout.addStretch()
         return page
