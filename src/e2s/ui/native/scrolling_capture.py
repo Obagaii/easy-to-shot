@@ -26,18 +26,21 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
+    QApplication,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
 )
 
+from qfluentwidgets import SpinBox
+
 from e2s.capture.scrolling import ScrollResult, ScrollStitcher
 from e2s.platform.windows.displays import wait_for_desktop_composition
 from e2s.platform.windows.window_capture import exclude_capture_window
+from e2s.ui.native.annotation_controls import CAPTURE_CONTROLS_STYLE, describe_control
 from e2s.ui.native.annotation_toolbar import Command, describe_button
 from e2s.ui.native.live_capture import LiveSelectionOutline
 from e2s.ui.native.toolbar_icons import toolbar_icon
@@ -291,52 +294,54 @@ class ScrollingCapture(QDialog):
         self._region = QRect()
         self._region_origin = QPoint()
         self._drag: tuple[QPoint, QRect] | None = None
+        self._toolbar_drag_anchor: QPoint | None = None
+        self._toolbar_moved = False
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setStyleSheet("""
-            QFrame[scrollSurface="true"] {
-                background: #ffffff; border: 1px solid #d9d9d9; border-radius: 8px;
-            }
+        self.setStyleSheet(CAPTURE_CONTROLS_STYLE + """
             QLabel { color: #595959; background: transparent; }
-            QToolButton { border: none; border-radius: 6px; background: transparent; }
-            QToolButton:hover { background: #f0f0f0; }
-            QToolButton:checked { background: #e6f4ff; }
-            QSpinBox { color: #262626; background: #f5f5f5; border: none; border-radius: 4px; }
+            QToolButton[scrollToggle="true"]:checked { background: #bae0ff; }
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-        actions = QFrame(self)
-        actions.setProperty("scrollSurface", True)
-        self._actions = QHBoxLayout(actions)
-        self._actions.setContentsMargins(12, 4, 12, 4)
-        self._actions.setSpacing(2)
-        self._status = QLabel("请在原窗口滚动", actions)
-        self._actions.addWidget(self._status)
-        self._actions.addStretch()
-        settings = QFrame(self)
-        settings.setProperty("scrollSurface", True)
-        self._buttons = QHBoxLayout(settings)
-        self._buttons.setContentsMargins(12, 4, 12, 4)
-        self._buttons.setSpacing(2)
-        layout.addWidget(actions)
-        layout.addWidget(settings)
+        surface = QFrame(self)
+        surface.setProperty("toolbarSurface", True)
+        layout.addWidget(surface)
+        self._buttons = QHBoxLayout(surface)
+        self._buttons.setContentsMargins(7, 5, 7, 5)
+        self._buttons.setSpacing(4)
+        self._actions = self._buttons
+        self._drag_handle = QToolButton(self)
+        self._drag_handle.setIcon(toolbar_icon("drag_handle"))
+        self._drag_handle.setIconSize(QSize(18, 22))
+        self._drag_handle.setFixedSize(17, 38)
+        describe_control(self._drag_handle, "拖动滚动截图工具栏")
+        self._drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
+        self._drag_handle.installEventFilter(self)
+        self._buttons.addWidget(self._drag_handle)
+        self._status = QLabel(self)
+        self._status.setFixedWidth(160)
+        self._status.setWordWrap(True)
+        self._set_status("请在原窗口滚动")
+        self._buttons.addWidget(self._status)
 
         self._auto = self._add_button("auto_scroll", "自动滚动", ("Alt+A",), self._toggle_auto)
         self._auto.setCheckable(True)
+        self._auto.setProperty("scrollToggle", True)
         interval_icon = QLabel(self)
         interval_icon.setPixmap(toolbar_icon("interval").pixmap(16, 16))
         self._buttons.addWidget(interval_icon)
-        interval = QSpinBox(self)
+        interval = SpinBox(self)
+        self._interval = interval
         interval.setRange(128, 1000)
         interval.setSingleStep(25)
         interval.setValue(self._auto_timer.interval())
-        interval.setFixedSize(62, 28)
+        interval.setSymbolVisible(False)
+        interval.setFixedSize(90, 32)
         interval.setSuffix(" ms")
-        interval.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         interval.setToolTip("自动滚动间隔（滚轮调整）")
         interval.valueChanged.connect(self._auto_timer.setInterval)
         self._buttons.addWidget(interval)
-        self._buttons.addSpacing(12)
+        self._buttons.addSpacing(4)
         self._vertical = self._add_button(
             "scroll_vertical", "垂直滚动", ("Alt+V",), lambda: self._change_direction(False)
         )
@@ -345,8 +350,9 @@ class ScrollingCapture(QDialog):
         )
         for button in (self._vertical, self._sideways):
             button.setCheckable(True)
+            button.setProperty("scrollToggle", True)
         self._vertical.setChecked(True)
-        self._buttons.addSpacing(12)
+        self._buttons.addSpacing(4)
         self._move_buttons = (
             self._add_button(
                 "move_horizontal", "横向移动选区（按住拖动）", ("Ctrl+Left", "Ctrl+Right"),
@@ -381,14 +387,18 @@ class ScrollingCapture(QDialog):
         )
         self._update_enabled()
 
+    def _set_status(self, message: str) -> None:
+        self._status.setText(message)
+        self._status.setToolTip(message)
+
     def _add_button(
         self, icon: str, label: str, keys: tuple[str, ...], action: Callable[[], None], *,
         layout: QHBoxLayout | None = None,
     ) -> QToolButton:
         button = QToolButton(self)
         button.setIcon(toolbar_icon(icon))
-        button.setFixedSize(32, 32)
-        button.setIconSize(QSize(24, 24))
+        button.setFixedSize(38, 38)
+        button.setIconSize(QSize(22, 22))
         describe_button(button, Command(label, keys))
         button.clicked.connect(lambda _checked=False: action())
         if not icon.startswith("move_"):
@@ -469,6 +479,33 @@ class ScrollingCapture(QDialog):
             self._thumbnail.reanchor(area, self._region, available)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._drag_handle and isinstance(event, QMouseEvent):
+            if (event.type() == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._toolbar_drag_anchor = event.globalPosition().toPoint() - self.pos()
+                self._drag_handle.grabMouse()
+                return True
+            if self._toolbar_drag_anchor is not None and event.type() == QEvent.Type.MouseMove:
+                point = event.globalPosition().toPoint() - self._toolbar_drag_anchor
+                screen = QApplication.screenAt(event.globalPosition().toPoint()) or self._screen
+                if screen is not None:
+                    area = screen.availableGeometry()
+                    point.setX(max(area.left(), min(point.x(), area.right() + 1 - self.width())))
+                    point.setY(max(area.top(), min(point.y(), area.bottom() + 1 - self.height())))
+                if self._toolbar_excluded or not QRect(point, self.size()).intersects(self._region):
+                    self.move(point)
+                    self._toolbar_moved = True
+                    self._configure_thumbnail(reset=False)
+                return True
+            if (self._toolbar_drag_anchor is not None
+                    and event.type() == QEvent.Type.MouseButtonRelease):
+                self._toolbar_drag_anchor = None
+                self._drag_handle.releaseMouse()
+                return True
+        if watched is self._drag_handle:
+            if event.type() == QEvent.Type.UngrabMouse:
+                self._toolbar_drag_anchor = None
+            return super().eventFilter(watched, event)
         if watched not in self._move_buttons:
             return super().eventFilter(watched, event)
         if (
@@ -507,7 +544,8 @@ class ScrollingCapture(QDialog):
             self._position_controls()
 
     def _position_controls(self) -> None:
-        self._place_toolbar(self._region, self._toolbar_excluded)
+        if not self._toolbar_moved:
+            self._place_toolbar(self._region, self._toolbar_excluded)
         self._configure_thumbnail(reset=False)
 
     def _move_region(self, start: QRect, dx: int, dy: int) -> None:
@@ -557,7 +595,7 @@ class ScrollingCapture(QDialog):
         if not self._scroll_step(self._horizontal, offset):
             self._auto.setChecked(False)
             self._auto_timer.stop()
-            self._status.setText("无法自动滚动，请在原窗口手动滚动。")
+            self._set_status("无法自动滚动，请在原窗口手动滚动。")
 
     def _collect(self) -> None:
         if self._processing or self._is_pending or self._is_closed or self._drag is not None:
@@ -603,11 +641,11 @@ class ScrollingCapture(QDialog):
                 self.failed.emit("当前选区没有空间显示长截图预览，请缩小选区。")
                 return
             self._ready = True
-            self._status.setText(f"{width} × {height} px")
+            self._set_status(f"{width} × {height} px")
         elif result is ScrollResult.NO_OVERLAP:
-            self._status.setText("未找到重叠内容，请退回少许再慢慢滚动。")
+            self._set_status("未找到重叠内容，请退回少许再慢慢滚动。")
         elif result is ScrollResult.FULL:
-            self._status.setText(f"{width} × {height} px · 已达到尺寸上限")
+            self._set_status(f"{width} × {height} px · 已达到尺寸上限")
             self._is_full = True
             self._stop()
         self._update_enabled()
@@ -652,7 +690,7 @@ class ScrollingCapture(QDialog):
             # A modal file dialog can cover the selection until the next composition.
             wait_for_desktop_composition()
         if message:
-            self._status.setText(message)
+            self._set_status(message)
         self._update_enabled()
 
     def _update_enabled(self) -> None:

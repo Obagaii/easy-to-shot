@@ -4,9 +4,11 @@ from time import monotonic, sleep
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
+from qfluentwidgets import SpinBox
 
 from e2s.ui.native.scrolling_capture import ScrollingCapture
 
@@ -92,6 +94,51 @@ def test_scroll_updates_the_thumbnail_and_exports_the_trimmed_full_image(app, ho
         assert exported[0][0] == "copy"
         bounds = (head, 0, tail, 120) if horizontal else (0, head, 120, tail)
         assert exported[0][1].tobytes() == source.crop(bounds).tobytes()
+    finally:
+        panel.reject()
+        panel.deleteLater()
+        app.processEvents()
+
+def test_scroll_toolbar_drag_and_interval_control(app) -> None:
+    screen = app.primaryScreen()
+    area = screen.availableGeometry()
+    region = QRect(area.center() - QPoint(100, 100), area.center() + QPoint(100, 100))
+    panel = ScrollingCapture(lambda _offset: QImage(), lambda _horizontal, _delta: True)
+    try:
+        assert panel.present(screen, region)
+        assert isinstance(panel._interval, SpinBox)
+        interval = panel._interval
+        assert interval.upButton.isHidden() and interval.downButton.isHidden()
+        interval.setFocus()
+        interval.lineEdit().selectAll()
+        QTest.keyClicks(interval.lineEdit(), "300")
+        QTest.keyClick(interval.lineEdit(), Qt.Key.Key_Return)
+        assert panel._auto_timer.interval() == 300
+        local_pos = QPointF(interval.rect().center())
+        wheel = QWheelEvent(
+            local_pos, QPointF(interval.mapToGlobal(local_pos.toPoint())), QPoint(), QPoint(0, 120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        QApplication.sendEvent(interval, wheel)
+        assert panel._auto_timer.interval() == 325
+        panel.move(area.topLeft() + QPoint(30, 30))
+        handle = panel._drag_handle
+        local = QPointF(handle.rect().center())
+        start = QPointF(handle.mapToGlobal(local.toPoint()))
+        original = panel.pos()
+        for kind, position, button, buttons in (
+            (QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseMove, start + QPointF(40, 30), Qt.MouseButton.NoButton,
+             Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseButtonRelease, start + QPointF(40, 30), Qt.MouseButton.LeftButton,
+             Qt.MouseButton.NoButton),
+        ):
+            event = QMouseEvent(kind, local, position, button, buttons, Qt.KeyboardModifier.NoModifier)
+            QApplication.sendEvent(handle, event)
+        assert panel.pos() == original + QPoint(40, 30)
+        panel._position_controls()
+        assert panel.pos() == original + QPoint(40, 30)
     finally:
         panel.reject()
         panel.deleteLater()

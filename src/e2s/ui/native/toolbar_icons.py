@@ -128,12 +128,20 @@ _PATHS = {
     "italic": "M11 4h8m-7 16H4m10-16-5 16",
     "underline": "M6 4v8a6 6 0 0 0 12 0V4M5 21h14",
     "strikethrough": "M17 6a7 7 0 0 0-9-1c-4 3 1 5 4 6 3 1 8 3 4 7a7 7 0 0 1-10-1M3 12h18",
-    "scroll_vertical": "M5 3h14v18H5zM12 6v12m-3-9 3-3 3 3m-6 6 3 3 3-3",
-    "scroll_horizontal": "M3 5h18v14H3zM6 12h12m-9-3-3 3 3 3m6-6 3 3-3 3",
-    "move_horizontal": "M2 7h20v10H2zM5 12h14m-11-3-3 3 3 3m8-6 3 3-3 3",
-    "move_vertical": "M7 2h10v20H7zM12 5v14m-3-11 3-3 3 3m-6 8 3 3 3-3",
-    "auto_scroll": "M12 3a9 9 0 1 0 9 9M12 2v4m0 6 5-4M18 3v5h5",
-    "interval": "M12 5a8 8 0 1 0 8 8m-8-4v5h4m-7-12h6m4 3 2 2",
+    "scroll_vertical": "M16 17.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3zm7"
+        " 14.01V10h-2v7.01h-3L15 21l4-3.99h-3zM9 3L5 6.99h3V14h2V6.99h3L9 3z",
+    "scroll_horizontal": "M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z",
+    "move_horizontal": "M8 5h3v2H8zm5 0h3v2h-3zM8 17h3v2H8zm5 0h3v2h-3zM8 8h2v3H8zm0 5h2v3H8zm6-"
+        "5h2v3h-2zm0 5h2v3h-2zM1 12l4-4v3h2v2H5v3zm22 0-4 4v-3h-2v-2h2V8z",
+    "move_vertical": "M5 8h2v3H5zm0 5h2v3H5zM17 8h2v3h-2zm0 5h2v3h-2zM8 8h3v2H8zm5 0h3v2h-3zM8"
+        " 14h3v2H8zm5 0h3v2h-3zM12 1l4 4h-3v2h-2V5H8zm0 22-4-4h3v-2h2v2h3z",
+    "auto_scroll": "M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8"
+        "c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6"
+        "s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z",
+    "interval": "M15,1H9v2h6V1z M11,14h2V8h-2V14z M19.03,7.39l1.42-1.42c-0.43-0.51-0.9-0."
+        "99-1.41-1.41l-1.42,1.42 C16.07,4.74,14.12,4,12,4c-4.97,0-9,4.03-9,9s4.02"
+        ",9,9,9s9-4.03,9-9C21,10.88,20.26,8.93,19.03,7.39z M12,20c-3.87,0-7-3.13-"
+        "7-7 s3.13-7,7-7s7,3.13,7,7S15.87,20,12,20z",
     "drag_handle": "M9 5h.1m5.9 0h.1M9 12h.1m5.9 0h.1M9 19h.1m5.9 0h.1",
     "drag_sidebar": "M3 5h.1m3.9 0h.1m3.9 0h.1m3.9 0h.1m3.9 0h.1m3.9 0h.1"
                     "M3 10h.1m3.9 0h.1m3.9 0h.1m3.9 0h.1m3.9 0h.1m3.9 0h.1",
@@ -163,7 +171,8 @@ _FILLED_ICONS = {
     "arrow", "barcode", "cancel", "copy", "ellipse", "eraser", "highlight", "move", "ocr",
     "pen", "pin", "record", "rect_highlight", "rectangle", "redo", "save", "scroll", "select",
     "text", "undo", "watermark", "record_start", "record_stop", "record_pause",
-    "record_folder", "speaker", "microphone", "microphone_on",
+    "record_folder", "speaker", "microphone", "microphone_on", "auto_scroll", "interval",
+    "scroll_vertical", "scroll_horizontal", "move_horizontal", "move_vertical",
 }
 
 
