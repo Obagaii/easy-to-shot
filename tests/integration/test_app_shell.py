@@ -13,21 +13,23 @@ from e2s.ui.native.tray import Tray, create_app_icon
 from e2s.ui.native.workbench import Workbench
 
 
-def test_closing_workbench_leaves_tray_available(app: QApplication) -> None:
+def test_closing_workbench_leaves_tray_available(app: QApplication, tmp_path: Path) -> None:
     icon = create_app_icon()
-    workbench = Workbench(icon)
+    workbench = Workbench(icon, tmp_path)
     tray = Tray(icon)
     controller = AppController(app, workbench, tray)
 
-    tray.show()
-    controller.show_workbench()
-    workbench.close()
-    assert not workbench.isVisible()
-    assert tray.isVisible()
+    try:
+        tray.show()
+        controller.show_workbench()
+        workbench.close()
+        assert not workbench.isVisible()
+        assert tray.isVisible()
 
-    tray.workbench_requested.emit()
-    assert workbench.isVisible()
-    controller.close()
+        tray.workbench_requested.emit()
+        assert workbench.isVisible()
+    finally:
+        controller.close()
 
 
 def test_secondary_process_activates_primary(app: QApplication, tmp_path: Path) -> None:

@@ -34,13 +34,13 @@ from e2s.ui.native.workbench import Workbench
 
 
 @pytest.fixture
-def desktop(app: QApplication, monkeypatch: pytest.MonkeyPatch):
+def desktop(app: QApplication, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     if app.platformName() == "offscreen":
         pytest.skip("Requires a real Qt desktop")
     screen = app.primaryScreen()
     monkeypatch.setattr(controller_module, "screen_at_cursor", lambda _app: screen)
     icon = create_app_icon()
-    workbench = Workbench(icon)
+    workbench = Workbench(icon, tmp_path)
     tray = Tray(icon)
     controller = AppController(app, workbench, tray)
     try:
