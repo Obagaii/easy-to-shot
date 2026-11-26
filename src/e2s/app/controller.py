@@ -1,5 +1,6 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
 from e2s.capture.geometry import SelectionRect, move_selection
-from e2s.capture.ocr import OcrError, ScreenshotRecognizer
+from e2s.capture.ocr import OcrError, OcrLine, ScreenshotRecognizer
 from e2s.capture.qr import CodeDetection, scan_codes
 from e2s.capture.service import CaptureError, capture_frame
 from e2s.capture.session import CaptureSession, CaptureSource, OutputSnapshot
@@ -62,7 +63,7 @@ class AppController(QObject):
     output_succeeded = Signal(object, object, str)
     _save_finished = Signal(object)
     _scan_finished = Signal(object, object, str)
-    _ocr_finished = Signal(str, str)
+    _ocr_finished = Signal(object, object, str)
 
     def __init__(self, app: QApplication, workbench: Workbench, tray: Tray) -> None:
         super().__init__()
@@ -243,20 +244,22 @@ class AppController(QObject):
 
     def _recognize_snapshot(self, snapshot: OutputSnapshot) -> None:
         try:
-            text = self._recognizer.recognize(snapshot)
+            lines = self._recognizer.recognize(snapshot)
         except OcrError as error:
-            self._ocr_finished.emit("", str(error))
+            self._ocr_finished.emit(snapshot, (), str(error))
         else:
-            self._ocr_finished.emit(text, "" if text else "选区内未识别到文字。")
+            self._ocr_finished.emit(snapshot, lines, "" if lines else "选区内未识别到文字。")
 
-    @Slot(str, str)
-    def _on_ocr_finished(self, text: str, message: str) -> None:
+    @Slot(object, object, str)
+    def _on_ocr_finished(
+        self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], message: str
+    ) -> None:
         overlay, self._recognizing_overlay = self._recognizing_overlay, None
         if overlay is None or self._overlay is not overlay:
             return
         overlay.set_output_feedback(message)
-        if text:
-            dialog = RecognitionResults(text, overlay)
+        if lines:
+            dialog = RecognitionResults(lines, partial(overlay.cover_text, snapshot, lines), overlay)
             dialog.finished.connect(overlay.reactivate)
             dialog.open()
 

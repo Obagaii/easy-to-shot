@@ -722,6 +722,7 @@ def test_scan_codes_place_markers_and_copy_the_selected_result(desktop, monkeypa
     popup.findChild(QPushButton).click()
     assert copied == [payload]
 
+
 def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.MonkeyPatch) -> None:
     controller, workbench, _, screen = desktop
     monkeypatch.setattr(credentials, "_DEEPSEEK_CREDENTIAL", f"EasyToShot/Test/{uuid4()}")
@@ -748,8 +749,11 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
                 self.send_response(401)
                 self.end_headers()
                 return
+            content = "Screenshot text recognition"
+            if payload.get("response_format") == {"type": "json_object"}:
+                content = json.dumps({"2": "Easy to Shot", "1": "Screenshot text recognition"})
             translated = json.dumps({"choices": [{
-                "finish_reason": "stop", "message": {"content": "Screenshot text recognition"},
+                "finish_reason": "stop", "message": {"content": content},
             }]}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -769,15 +773,32 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
         QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
         QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(420, 230))
         selection = overlay._session.selection
-        QTest.keyClick(overlay._canvas, Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier)
-        assert controller._recognizing_overlay is overlay
-        wait_for(lambda: controller._recognizing_overlay is None, "OCR completion")
-        result = overlay.findChild(RecognitionResults)
-        assert result is not None, overlay._canvas._feedback.text()
-        assert result.isVisible()
+        original = overlay._session.create_snapshot()
+        control = Qt.KeyboardModifier.ControlModifier
+
+        def recognize() -> RecognitionResults:
+            QTest.keyClick(overlay._canvas, Qt.Key.Key_O, control)
+            assert controller._recognizing_overlay is overlay
+            wait_for(lambda: controller._recognizing_overlay is None, "OCR completion")
+            dialog = overlay.findChild(RecognitionResults)
+            assert dialog is not None, overlay._canvas._feedback.text()
+            assert dialog.isVisible()
+            return dialog
+
+        result = recognize()
         assert result._source.toPlainText() == "截图文字识别\nEasy to Shot"
         assert not requests
+        assert not result._result_cover.isEnabled()
+        result._source_cover.click()
+        assert not result.isVisible(), result._status.text()
+        assert overlay._session.create_snapshot().rgba_pixels != original.rgba_pixels
+        assert "已覆盖" in overlay._canvas._feedback.text()
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_Z, control)
+        assert overlay._session.create_snapshot().rgba_pixels == original.rgba_pixels
+        wait_for(lambda: overlay.findChild(RecognitionResults) is None, "OCR dialog close")
+        assert not requests
 
+        result = recognize()
         result._translate.click()
         settings = result.findChild(DeepSeekSettingsDialog)
         assert settings.isVisible()
@@ -802,9 +823,33 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
             assert "English" in payload["messages"][0]["content"]
             assert payload["messages"][1] == {"role": "user", "content": "截图文字识别"}
 
-        result.reject()
+        assert not result._result_cover.isEnabled()
+        result._source.setPlainText("截图文字识别\nEasy to Shot")
+        result._translate.click()
+        wait_for(result._result_cover.isEnabled, "positioned translation")
+        assert result._result.toPlainText() == "Screenshot text recognition\nEasy to Shot"
+        _, _, positioned_payload = requests[2]
+        assert positioned_payload["response_format"] == {"type": "json_object"}
+        assert json.loads(positioned_payload["messages"][1]["content"]) == {
+            "1": "截图文字识别", "2": "Easy to Shot",
+        }
+
+        result._result_cover.click()
+        assert not result.isVisible(), result._status.text()
         assert controller._overlay is overlay
         assert overlay._session.selection == selection
+        translated = overlay._session.create_snapshot()
+        assert translated.rgba_pixels != original.rgba_pixels
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_Z, control)
+        assert overlay._session.create_snapshot().rgba_pixels == original.rgba_pixels
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_Y, control)
+        assert overlay._session.create_snapshot().rgba_pixels == translated.rgba_pixels
+
+        copied_images = []
+        monkeypatch.setattr(capture_output, "copy_image_to_clipboard", copied_images.append)
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_C, control)
+        assert copied_images == [translated.to_image()]
+        assert controller._overlay is None
     finally:
         credentials.delete_deepseek_key()
         server.shutdown()

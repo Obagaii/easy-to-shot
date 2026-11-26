@@ -1,6 +1,8 @@
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Self
+from typing import ClassVar, Self
+
+from PySide6.QtGui import QImage
 
 MIN_FONT_SIZE_PX = 8
 MAX_FONT_SIZE_PX = 256
@@ -23,6 +25,7 @@ class Tool(StrEnum):
     RECT_ERASER = "rect_eraser"
     BRUSH_ERASER = "brush_eraser"
     TEXT = "text"
+    IMAGE_PATCH = "image_patch"
 
 
 SHAPE_TOOLS = (Tool.RECTANGLE, Tool.ELLIPSE)
@@ -104,4 +107,14 @@ class Text:
         return replace(self, origin=(x + dx, y + dy))
 
 
+@dataclass(frozen=True, slots=True)
+class ImagePatch:
+    """An undoable, frame-relative raster overlay with transparent areas."""
+
+    origin: Point
+    image: QImage
+    tool: ClassVar[Tool] = Tool.IMAGE_PATCH
+
+
 type Element = Stroke | Text
+type Annotation = Element | ImagePatch

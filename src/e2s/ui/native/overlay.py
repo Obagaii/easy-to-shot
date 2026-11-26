@@ -23,6 +23,8 @@ from e2s.capture.geometry import (
     SelectionRect,
     move_selection,
 )
+from e2s.capture.ocr import OcrLine
+from e2s.capture.ocr_overlay import render_text_cover
 from e2s.capture.qr import CodeDetection
 from e2s.capture.service import CaptureError
 from e2s.capture.session import CaptureSession, OutputSnapshot
@@ -119,6 +121,15 @@ class CaptureOverlay(QWidget):
             self._canvas.set_feedback(message)
             if not is_pending:
                 self._canvas.focus_input()
+
+    def cover_text(
+        self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], text: tuple[str, ...]
+    ) -> None:
+        if self._canvas is None or self._session.selection != snapshot.selection:
+            raise CaptureError("截图选区已变化，请重新识别文字。")
+        patch = render_text_cover(snapshot, lines, text)
+        self._canvas.add_image_patch(patch)
+        self.set_output_feedback("已覆盖到截图，可按 Ctrl+Z 撤销。")
 
     def show_code_results(self, detections: tuple[CodeDetection, ...]) -> None:
         selection = self._session.selection

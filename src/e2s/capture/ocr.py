@@ -1,12 +1,21 @@
+from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PIL import Image
 
+from e2s.annotation.elements import Point
 from e2s.capture.session import OutputSnapshot
 
 if TYPE_CHECKING:
     from rapidocr import RapidOCR
+
+
+@dataclass(frozen=True, slots=True)
+class OcrLine:
+    text: str
+    corners: tuple[Point, ...]
 
 
 class OcrError(RuntimeError):
@@ -19,7 +28,7 @@ class ScreenshotRecognizer:
     def __init__(self) -> None:
         self._engine: RapidOCR | None = None
 
-    def recognize(self, snapshot: OutputSnapshot) -> str:
+    def recognize(self, snapshot: OutputSnapshot) -> tuple[OcrLine, ...]:
         try:
             if self._engine is None:
                 self._engine = self._load_engine()
@@ -27,10 +36,20 @@ class ScreenshotRecognizer:
                 "RGBA", (snapshot.width_px, snapshot.height_px), snapshot.rgba_pixels
             ).convert("RGB")
             result = self._engine(image)
+            if result.boxes is None or not result.txts:
+                return ()
+            lines = []
+            for text, box in zip(result.txts, result.boxes, strict=True):
+                text = " ".join(text.split())
+                corners = tuple((float(x), float(y)) for x, y in box)
+                if text and len(corners) == 4 and all(
+                    isfinite(value) for corner in corners for value in corner
+                ):
+                    lines.append(OcrLine(text, corners))
         except Exception as error:
             # RapidOCR and its ONNX backend use different exception types.
             raise OcrError("文字识别失败，请检查 OCR 组件后重试。") from error
-        return "\n".join(line.strip() for line in (result.txts or ()) if line.strip())
+        return tuple(lines)
 
     @staticmethod
     def _load_engine() -> "RapidOCR":

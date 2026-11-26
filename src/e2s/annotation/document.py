@@ -2,16 +2,16 @@ from dataclasses import dataclass
 
 from PySide6.QtGui import QImage
 
-from e2s.annotation.elements import MASK_TOOLS, Element, Tool
+from e2s.annotation.elements import MASK_TOOLS, Annotation, Element, Tool
 
 
 @dataclass(frozen=True, slots=True)
 class Edit:
     index: int
-    before: Element | None
-    after: Element | None
+    before: Annotation | None
+    after: Annotation | None
 
-    def apply(self, elements: list[Element], *, reverse: bool = False) -> None:
+    def apply(self, elements: list[Annotation], *, reverse: bool = False) -> None:
         before, after = (self.after, self.before) if reverse else (self.before, self.after)
         if after is None:
             del elements[self.index]
@@ -26,7 +26,7 @@ class AnnotationDocument:
 
     def __init__(self, source: QImage, origin_px: tuple[int, int] = (0, 0)) -> None:
         self.set_source(source, origin_px)
-        self._elements: list[Element] = []
+        self._elements: list[Annotation] = []
         self._past: list[tuple[Edit, ...]] = []
         self._future: list[tuple[Edit, ...]] = []
         self._revision = 0
@@ -46,7 +46,7 @@ class AnnotationDocument:
         self._origin_px = origin_px
 
     @property
-    def elements(self) -> tuple[Element, ...]:
+    def elements(self) -> tuple[Annotation, ...]:
         return tuple(self._elements)
 
     @property
@@ -61,10 +61,10 @@ class AnnotationDocument:
     def can_redo(self) -> bool:
         return bool(self._future)
 
-    def add(self, element: Element) -> int:
+    def add(self, element: Annotation) -> int:
         return self.add_many((element,))[0]
 
-    def add_many(self, elements: tuple[Element, ...]) -> tuple[int, ...]:
+    def add_many(self, elements: tuple[Annotation, ...]) -> tuple[int, ...]:
         edits = tuple(Edit(index, None, element)
                       for index, element in enumerate(elements, start=len(self._elements)))
         if edits:
@@ -74,7 +74,7 @@ class AnnotationDocument:
     def replace(self, index: int, element: Element) -> None:
         self.replace_many({index: element})
 
-    def replace_many(self, replacements: dict[int, Element]) -> None:
+    def replace_many(self, replacements: dict[int, Annotation]) -> None:
         edits = tuple(
             Edit(index, self._elements[index], element)
             for index, element in replacements.items() if self._elements[index] != element
@@ -92,7 +92,7 @@ class AnnotationDocument:
     def move_layers(self, indexes: set[int], action: str) -> set[int]:
         occupied = [
             index for index, element in enumerate(self._elements)
-            if element.tool not in (*MASK_TOOLS, Tool.WATERMARK)
+            if element.tool not in (*MASK_TOOLS, Tool.WATERMARK, Tool.IMAGE_PATCH)
         ]
         order = occupied.copy()
         if action in ("top", "bottom"):

@@ -24,6 +24,7 @@ from e2s.annotation.document import AnnotationDocument
 from e2s.annotation.elements import (
     SHAPE_TOOLS,
     Element,
+    ImagePatch,
     Point,
     Stroke,
     Text,
@@ -192,6 +193,11 @@ class AnnotationCanvas(QWidget):
     @property
     def has_annotations(self) -> bool:
         return bool(self._document.elements)
+
+    def add_image_patch(self, patch: ImagePatch) -> None:
+        self._document.add(patch)
+        self._set_selected_indexes(set())
+        self._refresh()
 
     def recording_layer(self) -> QImage:
         return self._preview_image()
