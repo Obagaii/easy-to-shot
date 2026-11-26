@@ -1,6 +1,5 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
-from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -40,7 +39,6 @@ from e2s.platform.windows.window_capture import scroll_window_below
 from e2s.ui.native.live_capture import grab_region, release_live_capture
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.pinned_image import PinnedImage
-from e2s.ui.native.recognition_results import RecognitionResults
 from e2s.ui.native.region_recording import RegionRecording
 from e2s.ui.native.scrolling_capture import ScrollingCapture
 from e2s.ui.native.tray import Tray
@@ -287,15 +285,13 @@ class AppController(QObject):
         self._ocr_cache[key] = lines
         self._show_ocr_results(overlay, snapshot, lines)
 
-    @staticmethod
     def _show_ocr_results(
-        overlay: CaptureOverlay, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...]
+        self, overlay: CaptureOverlay, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...]
     ) -> None:
         overlay.set_output_feedback("" if lines else "选区内未识别到文字。")
         if lines:
-            dialog = RecognitionResults(lines, partial(overlay.cover_text, snapshot, lines), overlay)
-            dialog.finished.connect(overlay.reactivate)
-            dialog.open()
+            language = self._workbench.settings.value("translation/language", "Simplified Chinese")
+            overlay.show_ocr_results(snapshot, lines, str(language))
 
     def _scan_snapshot(self, overlay: CaptureOverlay, snapshot: OutputSnapshot) -> None:
         try:

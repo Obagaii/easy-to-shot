@@ -1,3 +1,4 @@
+from dataclasses import replace
 from collections.abc import Callable
 
 from PySide6.QtCore import (
@@ -42,6 +43,7 @@ from e2s.capture.session import CaptureSession, OutputSnapshot
 from e2s.platform.windows.uia_selection import WindowsSelector
 from e2s.platform.windows.window_capture import monitor_pixel_bounds
 from e2s.ui.native.canvas import AnnotationCanvas
+from e2s.ui.native.ocr_workspace import OcrWorkspace
 from e2s.ui.native.qr_results import QrResults
 from e2s.ui.native.resize_handles import (
     draw_resize_frame,
@@ -82,6 +84,7 @@ class CaptureOverlay(QWidget):
         self._session = session
         self._selector = selector
         self._qr_results = QrResults(self)
+        self._ocr_workspace: OcrWorkspace | None = None
         self._frame = session.frame
         rect = self._frame.geometry_dip
         self._coordinates = ScreenCoordinates(
@@ -194,6 +197,31 @@ class CaptureOverlay(QWidget):
         patch = render_text_cover(snapshot, lines, text)
         self._canvas.add_image_patch(patch)
         self.set_output_feedback("已覆盖到截图，可按 Ctrl+Z 撤销。")
+
+    def show_ocr_results(
+        self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], language: str
+    ) -> None:
+        if self._session.selection != snapshot.selection:
+            self.set_output_feedback("截图选区已变化，请重新识别文字。")
+            return
+        self._dismiss_ocr_workspace()
+        region = self._selection_on_screen(snapshot.selection).toAlignedRect()
+        workspace = OcrWorkspace(snapshot, lines, region, self, language=language)
+        self._ocr_workspace = workspace
+        workspace.closed.connect(lambda: self._close_ocr_workspace(workspace))
+        workspace.show()
+        workspace.raise_()
+        workspace._editor.setFocus()
+
+    def _dismiss_ocr_workspace(self) -> None:
+        if self._ocr_workspace is not None:
+            self._ocr_workspace.close()
+
+    def _close_ocr_workspace(self, workspace: OcrWorkspace) -> None:
+        if self._ocr_workspace is workspace:
+            self._ocr_workspace = None
+            workspace.deleteLater()
+            self.reactivate()
 
     def show_code_results(self, detections: tuple[CodeDetection, ...]) -> None:
         selection = self._session.selection
@@ -427,6 +455,7 @@ class CaptureOverlay(QWidget):
     def _set_selection(self, selection: SelectionRect) -> None:
         previous = self._session.selection
         if previous != selection:
+            self._dismiss_ocr_workspace()
             self._qr_results.clear()
         try:
             self._session.set_selection(selection)
@@ -452,6 +481,7 @@ class CaptureOverlay(QWidget):
         )
         self._canvas = canvas
         canvas.installEventFilter(self)
+        canvas._toolbar.tool_changed.connect(lambda _tool: self._dismiss_ocr_workspace())
         canvas.cancelled.connect(self.close)
         canvas.copy_requested.connect(lambda: self._request_output(self.copy_requested.emit))
         canvas.save_requested.connect(lambda: self._request_output(self.save_requested.emit))
@@ -468,6 +498,8 @@ class CaptureOverlay(QWidget):
         )
 
     def _request_capture_action(self, name: str) -> None:
+        if name != "ocr":
+            self._dismiss_ocr_workspace()
         self._request_output(
             lambda snapshot: self.action_requested.emit(name, snapshot),
             include_text_covers=name != "ocr",
@@ -485,6 +517,11 @@ class CaptureOverlay(QWidget):
                 str(error) if isinstance(error, CaptureError) else "内存不足，无法生成截图。"
             )
             return
+        if include_text_covers and self._ocr_workspace is not None:
+            workspace = self._ocr_workspace
+            if snapshot.selection == workspace._snapshot.selection:
+                image = workspace.output_image()
+                snapshot = replace(snapshot, rgba_pixels=bytes(image.constBits()))
         requested(snapshot)
 
     def closeEvent(self, event: QCloseEvent) -> None:

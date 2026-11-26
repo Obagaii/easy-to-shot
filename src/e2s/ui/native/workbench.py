@@ -264,7 +264,7 @@ class Workbench(QMainWindow):
         card, content = self._card("文字识别", "使用本地 PP-OCRv6 Small 识别中英文，无需上传截图。")
         content.addWidget(QLabel("识别引擎：RapidOCR · ONNX Runtime"))
         layout.addWidget(card)
-        card, content = self._card("翻译", "翻译时会将识别文字发送给 DeepSeek；可在识别结果中更改语言。")
+        card, content = self._card("翻译", "翻译时会将识别文字发送给所选翻译服务；可在截图中更改语言和模型。")
         self._language = ComboBox()
         for name, value in LANGUAGES:
             self._language.addItem(name, userData=value)
@@ -281,7 +281,7 @@ class Workbench(QMainWindow):
 
     def _model_page(self) -> QWidget:
         page, layout = self._page("AI 模型", "管理翻译使用的模型和访问凭据。")
-        card, content = self._card("DeepSeek", "当前翻译使用 DeepSeek，API Key 保存在 Windows 凭据管理器。")
+        card, content = self._card("DeepSeek", "使用 DeepSeek 翻译时，API Key 保存在 Windows 凭据管理器。")
         content.addWidget(QLabel(f"模型：{DEEPSEEK_MODEL}"))
         self._key = LineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
