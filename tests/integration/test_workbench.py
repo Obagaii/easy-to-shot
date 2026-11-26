@@ -134,10 +134,13 @@ def test_shortcut_recorder_captures_keys_and_preserves_cancel(app: QApplication)
     dialog.show()
     app.processEvents()
     dialog._buttons[0].click()
+    assert dialog._rows[0].ring.aniGroup.state().name == "Running"
+    assert dialog._rows[0].ring.width() == 24
     assert not dialog._confirm_button.isEnabled()
     assert not dialog._add.isEnabled()
     QTest.keyClick(dialog, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
     assert dialog._buttons[0].text() == "Ctrl+K"
+    assert dialog._rows[0].ring.aniGroup.state().name == "Stopped"
     assert dialog._rows[0].action.isEnabled()
     dialog._rows[0].action.click()
     assert dialog._confirm_button.isEnabled()

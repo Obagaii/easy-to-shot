@@ -5,7 +5,7 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
-from qfluentwidgets import PrimaryPushButton, PushButton
+from qfluentwidgets import IndeterminateProgressRing, PrimaryPushButton, PushButton
 
 
 class ShortcutDialog(QDialog):
@@ -67,6 +67,21 @@ class ShortcutDialog(QDialog):
         button.clicked.connect(lambda: self._start_recording(row))
         action = PushButton("删除")
         action.clicked.connect(lambda: self._row_action(row))
+        ring = IndeterminateProgressRing(button, start=False)
+        ring.setFixedSize(24, 24)
+        ring.setStrokeWidth(3)
+        ring.hide()
+        ring.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        waiting = QLabel("请按下按键", button)
+        waiting.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        waiting.hide()
+        indicator = QHBoxLayout(button)
+        indicator.setContentsMargins(12, 4, 12, 4)
+        indicator.setSpacing(8)
+        indicator.addWidget(ring)
+        indicator.addWidget(waiting)
+        row.ring = ring
+        row.waiting = waiting
         layout.addWidget(button)
         layout.addStretch()
         layout.addWidget(action)
@@ -86,7 +101,10 @@ class ShortcutDialog(QDialog):
             return
         self._recording = self._rows.index(row)
         self._candidate = ""
-        self._buttons[self._recording].setText("◌  请按下按键")
+        self._buttons[self._recording].setText("")
+        row.waiting.show()
+        row.ring.show()
+        row.ring.start()
         row.action.setText("✓")
         row.action.setEnabled(False)
         self._confirm_button.setEnabled(False)
@@ -114,6 +132,9 @@ class ShortcutDialog(QDialog):
                 QKeySequence.SequenceFormat.PortableText
             )
             self._buttons[self._recording].setText(self._candidate)
+            self._rows[self._recording].ring.stop()
+            self._rows[self._recording].ring.hide()
+            self._rows[self._recording].waiting.hide()
             self._rows[self._recording].action.setEnabled(bool(self._candidate))
             event.accept()
             return True
@@ -137,6 +158,9 @@ class ShortcutDialog(QDialog):
         index = self._recording
         QApplication.instance().removeEventFilter(self)
         self._recording = None
+        self._rows[index].ring.stop()
+        self._rows[index].ring.hide()
+        self._rows[index].waiting.hide()
         self._buttons[index].setText(self._values[index] or "未设置")
         self._rows[index].action.setText("删除")
         self._rows[index].action.setEnabled(True)
@@ -170,5 +194,6 @@ class ShortcutDialog(QDialog):
     def done(self, result: int) -> None:
         if self._recording is not None:
             QApplication.instance().removeEventFilter(self)
+            self._rows[self._recording].ring.stop()
             self._recording = None
         super().done(result)

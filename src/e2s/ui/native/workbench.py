@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, QStandardPaths, Qt, Signal
-from PySide6.QtGui import QIcon, QKeySequence, QPixmap
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
@@ -47,6 +47,16 @@ QKeySequenceEdit, QListWidget#history { background: white; border: 1px solid #cc
 QListWidget#history::item { padding: 10px; border-bottom: 1px solid #edf1f5; }
 QListWidget#history::item:selected { background: #e4efff; color: #203859; }
 """
+
+
+class ShortcutCard(CardWidget):
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#a6b4c7"), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 6, 6)
 
 
 class Workbench(QMainWindow):
@@ -160,7 +170,7 @@ class Workbench(QMainWindow):
         return page
 
     def _shortcut_row(self, key: str, label: str) -> QWidget:
-        card = CardWidget()
+        card = ShortcutCard()
         row = QHBoxLayout(card)
         row.setContentsMargins(18, 10, 18, 10)
         row.addWidget(QLabel(label), 1)
