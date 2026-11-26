@@ -17,6 +17,7 @@ dependencies = [
     "pywin32-ctypes>=0.2.3,<0.3; sys_platform == 'win32'",
     "comtypes>=1.4.11,<2; sys_platform == 'win32'",
     "imageio-ffmpeg>=0.6,<1",
+    "dxcam==0.1.0; sys_platform == 'win32'",
     "PyAudioWPatch>=0.2.12.7,<0.3; sys_platform == 'win32'",
 ]
 

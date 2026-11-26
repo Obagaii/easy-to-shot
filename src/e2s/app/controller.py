@@ -37,7 +37,7 @@ from e2s.platform.windows.file_dialogs import choose_image_save_path
 from e2s.platform.windows.hotkeys import GlobalHotkey
 from e2s.platform.windows.uia_selection import WindowsSelector
 from e2s.platform.windows.window_capture import scroll_window_below
-from e2s.ui.native.live_capture import grab_region
+from e2s.ui.native.live_capture import grab_region, release_live_capture
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.pinned_image import PinnedImage
 from e2s.ui.native.recognition_results import RecognitionResults
@@ -410,6 +410,7 @@ class AppController(QObject):
 
     def _close_live_panel(self, panel: RegionRecording | ScrollingCapture) -> None:
         if self._live_panel is panel:
+            release_live_capture()
             self._live_panel = None
             if self._overlay is not None and self._capture_screen is not None:
                 if panel.result() == panel.DialogCode.Accepted:
@@ -556,6 +557,7 @@ class AppController(QObject):
     @Slot()
     def _finish_capture(self) -> None:
         self._capture_timer.stop()
+        release_live_capture()
         self._capture_screen = None
         self._ocr_cache.clear()
         if self._live_panel is not None:
