@@ -3,18 +3,26 @@ from time import sleep
 import pytest
 import zxingcpp
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QToolButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QPlainTextEdit,
+    QPushButton,
+    QToolButton,
+    QWidget,
+)
 
 from e2s.annotation.elements import Tool
 from e2s.app import capture_output
 from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
+from e2s.capture.geometry import SelectionDrag, SelectionRect
 from e2s.capture.service import CaptureFrame
 from e2s.platform.windows.clipboard import ClipboardError
 from e2s.storage.history import HistoryService, HistoryStore
+from e2s.ui.native import overlay as overlay_module
 from e2s.ui.native import qr_results
 from e2s.ui.native.tray import Tray, create_app_icon
 from e2s.ui.native.workbench import Workbench
@@ -93,6 +101,115 @@ def test_display_change_cancels_capture_started_from_tray(desktop) -> None:
     assert not workbench.isVisible()
     assert not results
     assert not outputs
+
+
+def test_smart_selection_uses_native_child_in_topmost_window(desktop) -> None:
+    controller, _, tray, screen = desktop
+    origin = screen.geometry().topLeft() + QPoint(80, 80)
+    flags = (
+        Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+    )
+    behind = QWidget(None, flags)
+    foreground = QWidget(None, flags)
+    child = QWidget(foreground)
+    behind.setGeometry(QRect(origin, QSize(320, 260)))
+    foreground.setGeometry(QRect(origin, QSize(250, 200)))
+    child.setGeometry(30, 40, 100, 80)
+    child.winId()
+    try:
+        behind.show()
+        foreground.show()
+        foreground.raise_()
+        tray.capture_requested.emit()
+        overlay = wait_for_overlay(controller)
+        position = overlay.mapFromGlobal(child.mapToGlobal(child.rect().center()))
+        QTest.mouseMove(overlay.windowHandle(), position)
+        child_bounds, window_bounds = overlay._hover_path
+
+        assert overlay._displayed_selection() == child_bounds
+        assert overlay._selection_on_screen(child_bounds).width() == pytest.approx(100, abs=2)
+        assert overlay._selection_on_screen(window_bounds).width() == pytest.approx(250, abs=2)
+    finally:
+        foreground.close()
+        behind.close()
+
+
+def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
+    desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _, tray, screen = desktop
+    child = SelectionRect(18, 18, 70, 70)
+    parent = SelectionRect(5, 5, 100, 115)
+    other = SelectionRect(110, 10, 180, 90)
+
+    class WindowSelectionStub:
+        def __init__(self, _overlay_id: int) -> None:
+            pass
+
+        def hit_path(self, x_px: int, _y_px: int) -> tuple[SelectionRect, ...]:
+            return (child, parent) if x_px < parent.right else (other,)
+
+    monkeypatch.setattr(overlay_module, "WindowSelection", WindowSelectionStub)
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    scale_x = overlay._frame.width_px / screen.geometry().width()
+    scale_y = overlay._frame.height_px / screen.geometry().height()
+    first_point = QPoint(round(45 / scale_x), round(45 / scale_y))
+    second_point = QPoint(round(145 / scale_x), round(45 / scale_y))
+    window = overlay.windowHandle()
+    QTest.mouseMove(window, first_point)
+    assert overlay._displayed_selection() == child
+    assert overlay._session.selection is None
+    assert overlay._canvas is None
+
+    wheel = QWheelEvent(
+        QPointF(first_point), QPointF(overlay.mapToGlobal(first_point)),
+        QPoint(), QPoint(0, 120), Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(overlay, wheel)
+    assert overlay._displayed_selection() == parent
+
+    QTest.mouseMove(window, second_point)
+    assert overlay._displayed_selection() == other
+    assert overlay._session.selection is None
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=second_point)
+    assert overlay._session.selection == other
+    assert overlay._canvas._toolbar.isVisible()
+
+    QTest.mouseMove(window, first_point)
+    assert overlay._displayed_selection() == other
+
+
+def test_drag_from_smart_preview_creates_manual_selection(desktop, monkeypatch) -> None:
+    controller, _, tray, _ = desktop
+
+    class WindowSelectionStub:
+        def __init__(self, _overlay_id: int) -> None:
+            pass
+
+        def hit_path(self, _x_px: int, _y_px: int) -> tuple[SelectionRect, ...]:
+            return (SelectionRect(0, 0, 500, 400),)
+
+    monkeypatch.setattr(overlay_module, "WindowSelection", WindowSelectionStub)
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    window = overlay.windowHandle()
+    start, finish = QPoint(20, 30), QPoint(140, 150)
+    expected = SelectionDrag(overlay._source_position(QPointF(start))).update(
+        overlay._source_position(QPointF(finish)), overlay._frame.width_px, overlay._frame.height_px
+    )
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=start)
+    assert overlay._displayed_selection() == SelectionRect(0, 0, 500, 400)
+    QTest.mouseMove(window, start + QPoint(1, 1))
+    assert overlay._displayed_selection() == SelectionRect(0, 0, 500, 400)
+    QTest.mouseMove(window, finish)
+    assert overlay._displayed_selection() == expected
+    assert overlay._session.selection is None
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=finish)
+    assert overlay._session.selection == expected
+    assert overlay._canvas._toolbar.isVisible()
 
 
 def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch) -> None:

@@ -4,6 +4,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, 
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
+    QCursor,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -11,8 +12,9 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPen,
     QScreen,
+    QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from e2s.capture.geometry import (
     ResizeHandle,
@@ -24,6 +26,7 @@ from e2s.capture.geometry import (
 from e2s.capture.qr import CodeDetection
 from e2s.capture.service import CaptureError
 from e2s.capture.session import CaptureSession, OutputSnapshot
+from e2s.platform.windows.window_capture import WindowSelection
 from e2s.ui.native.canvas import AnnotationCanvas
 from e2s.ui.native.qr_results import QrResults
 from e2s.ui.native.resize_handles import (
@@ -70,6 +73,10 @@ class CaptureOverlay(QWidget):
         )
         self._drag: SelectionDrag | None = None
         self._preview_selection: SelectionRect | None = None
+        self._window_selection: WindowSelection | None = None
+        self._hover_path: tuple[SelectionRect, ...] = ()
+        self._hover_index = 0
+        self._press_position: QPointF | None = None
         self._canvas: AnnotationCanvas | None = None
         self._feedback = ""
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -82,6 +89,9 @@ class CaptureOverlay(QWidget):
         self.windowHandle().setScreen(screen)
         self.setGeometry(self._frame.geometry_dip)
         self.showFullScreen()
+        if QApplication.platformName() == "windows":
+            self._window_selection = WindowSelection(int(self.winId()))
+            self._update_hover(QPointF(self.mapFromGlobal(QCursor.pos())))
         self.reactivate()
 
     def selection_origin(self, selection: SelectionRect) -> QPoint:
@@ -120,7 +130,7 @@ class CaptureOverlay(QWidget):
         viewport = QRectF(self.rect())
         painter.drawImage(viewport, self._frame.image)
 
-        selection = self._preview_selection if self._drag is not None else self._session.selection
+        selection = self._displayed_selection()
         shade = QPainterPath()
         shade.addRect(viewport)
         if selection is not None:
@@ -131,16 +141,29 @@ class CaptureOverlay(QWidget):
             self._paint_selection_frame(painter)
             if self._drag is None:
                 message = self._feedback or "拖动框选 · Esc 取消"
+                if not self._feedback and self._hover_path:
+                    message = "单击选中 · " + message
+                    if len(self._hover_path) > 1:
+                        message = "滚轮切换层级 · " + message
                 width = painter.fontMetrics().horizontalAdvance(message) + 20
                 self._draw_label(painter, message, (self.width() - width) / 2, 36)
 
+    def _displayed_selection(self) -> SelectionRect | None:
+        if self._drag is not None:
+            return self._preview_selection
+        if self._hover_path:
+            return self._hover_path[self._hover_index]
+        return self._session.selection
+
     def _paint_selection_frame(self, painter: QPainter) -> None:
-        selection = self._preview_selection if self._drag is not None else self._session.selection
+        selection = self._displayed_selection()
         if selection is None:
             return
         rect = self._selection_on_screen(selection)
         active = self._drag.resize_handle if self._drag is not None else None
-        draw_resize_frame(painter, rect, QRectF(self.rect()), active)
+        draw_resize_frame(
+            painter, rect, QRectF(self.rect()), active, show_handles=not self._hover_path
+        )
         dimensions = f"{selection.width_px} × {selection.height_px} px"
         bottom = rect.top() - 8 if rect.top() >= 40 else rect.bottom() + 32
         self._draw_label(painter, dimensions, rect.left(), bottom)
@@ -176,7 +199,13 @@ class CaptureOverlay(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            drag = self._selection_drag_at(event.position())
+            position = event.position()
+            self._update_hover(position)
+            if self._hover_path:
+                self._press_position = position
+                event.accept()
+                return
+            drag = self._selection_drag_at(position)
             if drag is not None:
                 self._start_drag(drag, event.position())
                 event.accept()
@@ -184,15 +213,77 @@ class CaptureOverlay(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        position = event.position()
+        self._maybe_start_manual_drag(position)
         if self._drag is not None:
-            self._update_drag(event.position())
+            self._update_drag(position)
         else:
-            self._update_cursor(event.position())
+            self._update_hover(position)
+            self._update_cursor(position)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        if self._press_position is None and self._hover_path:
+            self._hover_path = ()
+            self.update()
+        super().leaveEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        delta = event.angleDelta().y()
+        if self._press_position is None and len(self._hover_path) > 1 and delta:
+            self._hover_index = max(
+                0, min(len(self._hover_path) - 1, self._hover_index + (1 if delta > 0 else -1))
+            )
+            self.update()
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def _update_hover(self, position: QPointF) -> None:
+        if self._window_selection is None or self._press_position is not None:
+            return
+        path = ()
+        if QRectF(self.rect()).contains(position):
+            # Hover samples a pixel inside the screen, including its last row and column.
+            x, y = self._coordinates.to_source(
+                self._coordinates.origin_x_dip + position.x(),
+                self._coordinates.origin_y_dip + position.y(),
+            )
+            path = tuple(
+                rect for rect in self._window_selection.hit_path(int(x), int(y))
+                if rect.fits(self._frame.width_px, self._frame.height_px)
+            )
+        if path != self._hover_path:
+            self._hover_path = path
+            self._hover_index = 0
+            self.update()
+
+    def _maybe_start_manual_drag(self, position: QPointF) -> None:
+        origin = self._press_position
+        if origin is None:
+            return
+        delta = position - origin
+        distance = QApplication.startDragDistance()
+        if delta.x() ** 2 + delta.y() ** 2 >= distance ** 2:
+            self._press_position = None
+            self._hover_path = ()
+            self._start_drag(SelectionDrag(self._source_position(origin)), origin)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton or self._drag is None:
+        if event.button() != Qt.MouseButton.LeftButton:
             return
-        self._update_drag(event.position())
+        position = event.position()
+        self._maybe_start_manual_drag(position)
+        if self._press_position is not None:
+            selection = self._displayed_selection()
+            self._press_position = None
+            if selection is not None and self._selection_on_screen(selection).contains(position):
+                self._set_selection(selection)
+            self._update_hover(position)
+            event.accept()
+            return
+        if self._drag is None:
+            return
+        self._update_drag(position)
         selection = self._preview_selection
         self._preview_selection = None
         self._drag = None
@@ -201,7 +292,8 @@ class CaptureOverlay(QWidget):
         if self._canvas is not None:
             self._canvas.preview_selection(None)
             self._canvas.focus_input()
-        self._update_cursor(event.position())
+        self._update_hover(position)
+        self._update_cursor(position)
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -235,6 +327,8 @@ class CaptureOverlay(QWidget):
             self._session.set_selection(selection)
             if self._canvas is None:
                 self._show_annotation_canvas(selection)
+                self._window_selection = None
+                self._hover_path = ()
             elif selection != previous:
                 self._canvas.set_selection_target(self._selection_on_screen(selection))
         except (CaptureError, MemoryError) as error:

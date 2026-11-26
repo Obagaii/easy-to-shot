@@ -52,7 +52,8 @@ def frame_handle_positions(
 
 
 def draw_resize_frame(
-    painter: QPainter, rect: QRectF, viewport: QRectF, active: ResizeHandle | None = None
+    painter: QPainter, rect: QRectF, viewport: QRectF, active: ResizeHandle | None = None,
+    *, show_handles: bool = True,
 ) -> None:
     """Paint the capture and pin frame in logical widget coordinates."""
     painter.save()
@@ -62,6 +63,10 @@ def draw_resize_frame(
     painter.drawRect(rect)
     painter.setPen(QPen(_FRAME_ACCENT, 1))
     painter.drawRect(rect)
+
+    if not show_handles:
+        painter.restore()
+        return
 
     length = min(12, rect.width() / 4, rect.height() / 4)
     for handle, point in frame_handle_positions(rect, viewport):
