@@ -4,9 +4,14 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, QSize, QStandardPaths, Qt, Signal
 from PySide6.QtGui import QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton,
+    QApplication, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QStackedWidget, QVBoxLayout, QWidget,
+)
+
+from qfluentwidgets import (
+    CardWidget, ComboBox, FluentIcon, LineEdit, NavigationInterface,
+    PrimaryPushButton, PushButton,
 )
 
 from e2s.capture.translation import DEEPSEEK_MODEL
@@ -35,16 +40,7 @@ QLabel#brand { font-size: 21px; font-weight: 700; color: #1b2a40; }
 QLabel#title { font-size: 25px; font-weight: 700; }
 QLabel#subtitle, QLabel#hint { color: #718096; }
 QLabel#section { font-size: 16px; font-weight: 600; }
-QFrame#card { background: white; border: 1px solid #e1e7f0; border-radius: 10px; }
-QListWidget#navigation { background: transparent; border: 0; outline: 0; font-size: 14px; }
-QListWidget#navigation::item { padding: 12px 14px; border-radius: 7px; margin: 2px 8px; }
-QListWidget#navigation::item:selected { background: #dce9ff; color: #2563c5; }
-QListWidget#navigation::item:hover:!selected { background: #e1e8f2; }
-QPushButton { background: white; border: 1px solid #ccd7e6; border-radius: 6px; padding: 8px 15px; color: #27374d; }
-QPushButton:hover { background: #eef4ff; border-color: #8aafe9; }
-QPushButton#primary { background: #3978df; border-color: #3978df; color: white; }
-QPushButton#primary:hover { background: #2e68c5; }
-QLineEdit, QKeySequenceEdit, QComboBox, QListWidget#history { background: white; border: 1px solid #ccd7e6; border-radius: 6px; padding: 7px; }
+QKeySequenceEdit, QListWidget#history { background: white; border: 1px solid #ccd7e6; border-radius: 6px; padding: 7px; }
 QListWidget#history::item { padding: 10px; border-bottom: 1px solid #edf1f5; }
 QListWidget#history::item:selected { background: #e4efff; color: #203859; }
 """
@@ -80,19 +76,31 @@ class Workbench(QMainWindow):
         tagline = QLabel("轻松捕捉，记录灵感", objectName="hint")
         side.addWidget(tagline)
         side.addSpacing(22)
-        capture = QPushButton("＋  新建截图", objectName="primary")
+        capture = PrimaryPushButton("＋  新建截图")
         capture.clicked.connect(self.capture_requested.emit)
         side.addWidget(capture)
         side.addSpacing(18)
-        self._navigation = QListWidget(objectName="navigation")
-        self._navigation.addItems(["全局热键", "截图历史", "OCR 和翻译", "AI 模型", "关于"])
+        self._navigation = NavigationInterface(showMenuButton=False, collapsible=False)
+        self._navigation.setExpandWidth(176)
+        self._navigation.expand(False)
+        entries = (
+            ("hotkey", FluentIcon.SETTING, "全局热键"),
+            ("history", FluentIcon.HISTORY, "截图历史"),
+            ("ocr", FluentIcon.LANGUAGE, "OCR 和翻译"),
+            ("model", FluentIcon.ROBOT, "AI 模型"),
+            ("about", FluentIcon.INFO, "关于"),
+        )
+        for index, (route, icon, label) in enumerate(entries):
+            self._navigation.addItem(
+                route, icon, label, onClick=lambda _checked=False, i=index: self._change_page(i)
+            )
         side.addWidget(self._navigation, 1)
         self._pages = QStackedWidget()
         for page in (self._hotkey_page(), self._history_page(), self._ocr_page(),
                      self._model_page(), self._about_page()):
             self._pages.addWidget(page)
-        self._navigation.currentRowChanged.connect(self._change_page)
-        self._navigation.setCurrentRow(0)
+
+        self._navigation.setCurrentItem("hotkey")
         layout.addWidget(sidebar)
         layout.addWidget(self._pages, 1)
         self.setCentralWidget(shell)
@@ -108,7 +116,7 @@ class Workbench(QMainWindow):
         return page, layout
 
     def _card(self, title: str, description: str) -> tuple[QFrame, QVBoxLayout]:
-        card = QFrame(objectName="card")
+        card = CardWidget()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
@@ -124,7 +132,7 @@ class Workbench(QMainWindow):
         self._shortcut.setMaximumSequenceLength(1)
         self._shortcut.setClearButtonEnabled(True)
         self._shortcut.setAccessibleName("截图热键")
-        button = QPushButton("应用热键", objectName="primary")
+        button = PrimaryPushButton("应用热键")
         button.clicked.connect(lambda: self.hotkey_requested.emit(self._shortcut.keySequence()))
         row.addWidget(self._shortcut, 1)
         row.addWidget(button)
@@ -149,11 +157,11 @@ class Workbench(QMainWindow):
         layout.addWidget(self._history_list, 1)
         layout.addWidget(self._preview, 1)
         row = QHBoxLayout()
-        refresh = QPushButton("刷新")
+        refresh = PushButton("刷新")
         refresh.clicked.connect(self.refresh_history)
-        copy = QPushButton("复制图片")
+        copy = PushButton("复制图片")
         copy.clicked.connect(self._copy_history)
-        delete = QPushButton("删除记录")
+        delete = PushButton("删除记录")
         delete.clicked.connect(self._delete_history)
         row.addWidget(refresh)
         row.addWidget(copy)
@@ -168,9 +176,9 @@ class Workbench(QMainWindow):
         content.addWidget(QLabel("识别引擎：RapidOCR · ONNX Runtime"))
         layout.addWidget(card)
         card, content = self._card("翻译", "翻译时会将识别文字发送给 DeepSeek；可在识别结果中更改语言。")
-        self._language = QComboBox()
+        self._language = ComboBox()
         for name, value in LANGUAGES:
-            self._language.addItem(name, value)
+            self._language.addItem(name, userData=value)
         index = self._language.findData(self.settings.value("translation/language", "Simplified Chinese"))
         self._language.setCurrentIndex(max(index, 0))
         self._language.currentIndexChanged.connect(
@@ -186,14 +194,15 @@ class Workbench(QMainWindow):
         page, layout = self._page("AI 模型", "管理翻译使用的模型和访问凭据。")
         card, content = self._card("DeepSeek", "当前翻译使用 DeepSeek，API Key 保存在 Windows 凭据管理器。")
         content.addWidget(QLabel(f"模型：{DEEPSEEK_MODEL}"))
-        self._key = QLineEdit(echoMode=QLineEdit.EchoMode.Password)
+        self._key = LineEdit()
+        self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key.setAccessibleName("DeepSeek API Key")
         self._key.setPlaceholderText("输入 API Key 以保存或替换")
         content.addWidget(self._key)
         row = QHBoxLayout()
-        save = QPushButton("保存 Key", objectName="primary")
+        save = PrimaryPushButton("保存 Key")
         save.clicked.connect(self._save_key)
-        remove = QPushButton("移除 Key")
+        remove = PushButton("移除 Key")
         remove.clicked.connect(self._remove_key)
         row.addWidget(save)
         row.addWidget(remove)
@@ -217,6 +226,7 @@ class Workbench(QMainWindow):
 
     def _change_page(self, index: int) -> None:
         self._pages.setCurrentIndex(index)
+        self._navigation.setCurrentItem(("hotkey", "history", "ocr", "model", "about")[index])
         if index == 1:
             self.refresh_history()
         elif index == 3:
@@ -305,7 +315,7 @@ class Workbench(QMainWindow):
         self.activateWindow()
 
     def focus_hotkey_settings(self) -> None:
-        self._navigation.setCurrentRow(0)
+        self._change_page(0)
         self._shortcut.setFocus()
 
     def show_hotkey_state(self, state: HotkeyState) -> None:
@@ -313,5 +323,3 @@ class Workbench(QMainWindow):
         self._hotkey_feedback.setText(_HOTKEY_MESSAGES.get(state.error, ""))
         if state.active and state.error is None:
             self.settings.setValue("hotkey/capture", state.active)
-
-

@@ -42,3 +42,15 @@ def test_hotkey_persists_only_after_success_and_language_is_saved(
     assert restored._language.currentData() == "English"
     window.close()
     restored.close()
+
+
+def test_navigation_and_tray_hotkey_entry_select_the_right_page(
+    app: QApplication, tmp_path: Path
+) -> None:
+    window = Workbench(create_app_icon(), tmp_path)
+    for index, route in enumerate(("hotkey", "history", "ocr", "model", "about")):
+        window._navigation.panel.widget(route).click()
+        assert window._pages.currentIndex() == index
+    window.focus_hotkey_settings()
+    assert window._pages.currentIndex() == 0
+    window.close()

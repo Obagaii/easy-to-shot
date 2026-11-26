@@ -7,10 +7,13 @@ Windows 桌面截图工具。通过主菜单、托盘或全局热键开始截图
 使用 Windows 11 x64 和 Python 3.13。在 PowerShell 中执行：
 
 ~~~powershell
-python -m pip install ".[test]"
-python -m e2s
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install ".[test]"
+.\start.vbs
 ~~~
 
+
+主菜单使用 PySide6-Fluent-Widgets（GPLv3 或商业授权）；分发时请遵守其许可条款。
 
 - 默认全局截图热键为 Ctrl+Shift+F8。确认前，选区会跟随鼠标预览所在的窗口或控件。单击确认，Tab 切换整窗和控件，滚轮切换控件层级，也可以直接拖动框选。
 - 确认选区后显示工具栏。在移动模式可拖动整个选区，拖动四角或四边中点可缩放。移动或缩放时，工具栏暂时隐藏。
@@ -57,5 +60,3 @@ python -m pytest
 ~~~
 
 复制、另存或贴图成功后，`AppController.output_succeeded` 提供输出服务使用的不可变快照、任务结果和来源（`copy`、`save` 或 `pin`）。历史服务可按会话 ID 和结果修订号去重。
-
-
