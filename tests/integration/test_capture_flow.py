@@ -25,6 +25,7 @@ from e2s.capture.ocr import OcrLine
 from e2s.capture.service import CaptureFrame
 from e2s.capture.session import OutputSnapshot
 from e2s.platform.windows.clipboard import ClipboardError
+from e2s.platform.windows import uia_selection
 from e2s.platform.windows.uia_selection import HitPhase, SelectorHit
 from e2s.storage.history import HistoryService, HistoryStore
 from e2s.ui.native import qr_results
@@ -116,7 +117,9 @@ def test_display_change_cancels_capture_started_from_tray(desktop) -> None:
     assert not outputs
 
 
-def test_smart_selection_uses_native_child_in_topmost_window(desktop) -> None:
+def test_smart_selection_uses_native_child_in_topmost_window(
+    desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
     controller, _, tray, screen = desktop
     origin = screen.geometry().topLeft() + QPoint(80, 80)
     flags = (
@@ -134,11 +137,22 @@ def test_smart_selection_uses_native_child_in_topmost_window(desktop) -> None:
         behind.show()
         foreground.show()
         foreground.raise_()
+        QApplication.processEvents()
+        window_ids = {int(behind.winId()), int(foreground.winId())}
+        list_visible_windows = uia_selection.visible_windows
+        monkeypatch.setattr(
+            uia_selection, "visible_windows",
+            lambda overlay_id, monitor: tuple(
+                window for window in list_visible_windows(overlay_id, monitor)
+                if window.window_id in window_ids
+            ),
+        )
         position = child.mapToGlobal(child.rect().center())
         QCursor.setPos(position)
         tray.capture_requested.emit()
         overlay = wait_for_overlay(controller)
         QCursor.setPos(position + QPoint(1, 0))
+        move_pointer(overlay, overlay.mapFromGlobal(position + QPoint(1, 0)))
         smart = overlay._smart_selection
 
         def preview_matches_child() -> bool:
