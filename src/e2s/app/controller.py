@@ -33,7 +33,7 @@ from e2s.platform.windows.displays import (
     screen_at_cursor,
 )
 from e2s.platform.windows.file_dialogs import choose_image_save_path
-from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, GlobalHotkey
+from e2s.platform.windows.hotkeys import GlobalHotkey
 from e2s.platform.windows.uia_selection import WindowsSelector
 from e2s.platform.windows.window_capture import scroll_window_below
 from e2s.ui.native.live_capture import grab_region
@@ -91,6 +91,11 @@ class AppController(QObject):
         self._save_finished.connect(self._on_save_finished, Qt.ConnectionType.QueuedConnection)
         self._scan_finished.connect(self._on_scan_finished, Qt.ConnectionType.QueuedConnection)
         self._ocr_finished.connect(self._on_ocr_finished, Qt.ConnectionType.QueuedConnection)
+        self.output_succeeded.connect(
+            lambda snapshot, result, source: self._workbench.history.record_success(
+                snapshot, result, source, limit=200
+            )
+        )
 
         self._capture_timer = QTimer(self)
         self._capture_timer.setSingleShot(True)
@@ -109,7 +114,8 @@ class AppController(QObject):
         workbench.hotkey_requested.connect(self._replace_hotkey)
 
     def start(self) -> None:
-        self._replace_hotkey(QKeySequence(DEFAULT_HOTKEY))
+        self._workbench.history.repair_on_startup(limit=200)
+        self._replace_hotkey(QKeySequence(self._workbench.saved_hotkey()))
         self._tray.show()
         self.show_workbench()
 
@@ -569,3 +575,6 @@ class AppController(QObject):
     @Slot(QKeySequence)
     def _replace_hotkey(self, sequence: QKeySequence) -> None:
         self._workbench.show_hotkey_state(self._hotkey.replace(sequence))
+
+
+

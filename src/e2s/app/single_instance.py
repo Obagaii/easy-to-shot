@@ -45,7 +45,7 @@ class SingleInstance(QObject):
             if self._activate_existing(deadline):
                 return False
             sleep(0.04)
-        raise SingleInstanceError("Easy to Shot 已运行，但暂时无法激活工作台。")
+        raise SingleInstanceError("Easy to Shot 已运行，但暂时无法激活主菜单。")
 
     def close(self) -> None:
         self._server.close()
@@ -86,3 +86,4 @@ class SingleInstance(QObject):
             self.activation_requested.emit()
             socket.write(_ACCEPTED)
         socket.disconnectFromServer()
+

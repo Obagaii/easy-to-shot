@@ -39,7 +39,7 @@ class Tray(QSystemTrayIcon):
         self._menu = QMenu()
         self.setContextMenu(self._menu)
         self._menu.addAction('新建截图', self.capture_requested.emit)
-        self._menu.addAction("打开工作台", self.workbench_requested.emit)
+        self._menu.addAction("打开主菜单", self.workbench_requested.emit)
         self._menu.addAction("截图热键", self.settings_requested.emit)
         self._menu.addSeparator()
         self._menu.addAction("退出", self.quit_requested.emit)
@@ -54,3 +54,4 @@ class Tray(QSystemTrayIcon):
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == self.ActivationReason.DoubleClick:
             self.workbench_requested.emit()
+

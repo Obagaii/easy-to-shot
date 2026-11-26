@@ -1,6 +1,7 @@
 from collections.abc import Callable
+from pathlib import Path
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import QSettings, QStandardPaths, Qt, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -19,18 +20,8 @@ from e2s.capture.service import CaptureError
 from e2s.capture.translation import DeepSeekTranslator
 from e2s.platform.windows.credentials import CredentialError, get_deepseek_key
 from e2s.ui.native.deepseek_settings import DeepSeekSettingsDialog
+from e2s.ui.native.workbench import LANGUAGES
 
-_TARGET_LANGUAGES = (
-    ("简体中文", "Simplified Chinese"),
-    ("繁体中文", "Traditional Chinese"),
-    ("英语", "English"),
-    ("日语", "Japanese"),
-    ("韩语", "Korean"),
-    ("法语", "French"),
-    ("德语", "German"),
-    ("西班牙语", "Spanish"),
-    ("俄语", "Russian"),
-)
 _TRANSLATION_HINT = "点击「翻译」后会将原文发送给 DeepSeek。"
 _COVER_HINT = "覆盖到截图需要保留识别时的分行。"
 
@@ -75,8 +66,12 @@ class RecognitionResults(QDialog):
 
         self._target = QComboBox(self)
         self._target.setAccessibleName("目标语言")
-        for name, language in _TARGET_LANGUAGES:
+        for name, language in LANGUAGES:
             self._target.addItem(name, language)
+        root = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
+        settings = QSettings(str(Path(root) / "workbench.ini"), QSettings.Format.IniFormat)
+        index = self._target.findData(settings.value("translation/language", "Simplified Chinese"))
+        self._target.setCurrentIndex(max(index, 0))
 
         self._translate = QPushButton("翻译", self, autoDefault=False)
         self._translate.clicked.connect(self._translate_source)
@@ -194,3 +189,4 @@ class RecognitionResults(QDialog):
     def _show_error(self, message: str) -> None:
         self._status.setText(message)
         self._set_translating(False)
+

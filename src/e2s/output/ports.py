@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class TaskState(str, Enum):
-    """互斥的任务状态，与 frontend/src/bridge/types.ts 保持一致。"""
+    """输出任务的互斥状态。"""
 
     PENDING = "pending"
     SUCCEEDED = "succeeded"
@@ -40,3 +40,4 @@ class ClipboardWriter(Protocol):
 
     def write_image(self, snapshot: "OutputSnapshot") -> None:
         """写入合成像素；失败时抛 ClipboardWriteError。"""
+

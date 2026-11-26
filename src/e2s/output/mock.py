@@ -1,4 +1,4 @@
-"""开发期的剪贴板模拟实现，结构与真实 WebChannel / GUI 写入接口一致。"""
+"""Clipboard test doubles."""
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -21,3 +21,4 @@ class MockClipboardWriter:
             self.fail_next_write = False
             raise ClipboardWriteError("模拟剪贴板写入失败")
         self.written.append(snapshot)
+

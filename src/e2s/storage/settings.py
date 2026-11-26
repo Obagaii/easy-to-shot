@@ -1,8 +1,4 @@
-"""设置数据模型、校验与原子持久化。
-
-设置文件位于应用数据目录，字段使用 snake_case；WebChannel 侧由桥接转换为
-camelCase。校验失败或写入失败时保留原文件，调用方据此回退到原设置。
-"""
+"""Settings validation and atomic persistence."""
 
 from __future__ import annotations
 
@@ -389,3 +385,5 @@ class SettingsService:
             ApplyStatus.APPLIED,
             registered.active_hotkey if registered else current.hotkey,
         )
+
+
