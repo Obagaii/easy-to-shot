@@ -279,11 +279,13 @@ class AppController(QObject):
             if min(selection.width_px, selection.height_px) < 16:
                 overlay.set_output_feedback("录屏区域至少需要 16 × 16 像素。")
                 return
-            default_name = (self._pictures_directory() / build_filename(datetime.now())).with_suffix(
-                ".mp4"
-            )
+            movies = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MoviesLocation)
+            directory = (Path(movies) if movies else Path.home()) / "EasyToShot"
+            default_name = directory / build_filename(datetime.now())
             try:
-                panel = RegionRecording(grab, default_name, QSize(selection.width_px, selection.height_px))
+                panel = RegionRecording(
+                    grab, default_name, QSize(selection.width_px, selection.height_px)
+                )
             except OSError:
                 overlay.set_output_feedback("无法创建录屏临时文件。")
                 return

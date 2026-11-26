@@ -52,6 +52,15 @@ def wait_for_overlay(controller: AppController):
     pytest.fail("The capture overlay did not open")
 
 
+def move_pointer(
+    widget: QWidget, position: QPoint, buttons: Qt.MouseButton = Qt.MouseButton.NoButton
+) -> None:
+    QApplication.sendEvent(widget, QMouseEvent(
+        QEvent.Type.MouseMove, QPointF(position), QPointF(widget.mapToGlobal(position)),
+        Qt.MouseButton.NoButton, buttons, Qt.KeyboardModifier.NoModifier,
+    ))
+
+
 def test_capture_hides_maximized_workbench_and_cancel_restores_it(
     desktop, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -123,7 +132,13 @@ def test_smart_selection_uses_native_child_in_topmost_window(desktop) -> None:
         tray.capture_requested.emit()
         overlay = wait_for_overlay(controller)
         position = overlay.mapFromGlobal(child.mapToGlobal(child.rect().center()))
-        QTest.mouseMove(overlay.windowHandle(), position)
+        window_selection = overlay._window_selection
+        window_ids = {int(behind.winId()), int(foreground.winId())}
+        # Restrict the real Z-order snapshot to the native windows installed by this test.
+        window_selection._windows = [
+            entry for entry in window_selection._windows if entry[0] in window_ids
+        ]
+        overlay._update_hover(QPointF(position))
         child_bounds, window_bounds = overlay._hover_path
 
         assert overlay._displayed_selection() == child_bounds
@@ -156,8 +171,7 @@ def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
     scale_y = overlay._frame.height_px / screen.geometry().height()
     first_point = QPoint(round(45 / scale_x), round(45 / scale_y))
     second_point = QPoint(round(145 / scale_x), round(45 / scale_y))
-    window = overlay.windowHandle()
-    QTest.mouseMove(window, first_point)
+    move_pointer(overlay, first_point)
     assert overlay._displayed_selection() == child
     assert overlay._session.selection is None
     assert overlay._canvas is None
@@ -170,14 +184,14 @@ def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
     QApplication.sendEvent(overlay, wheel)
     assert overlay._displayed_selection() == parent
 
-    QTest.mouseMove(window, second_point)
+    move_pointer(overlay, second_point)
     assert overlay._displayed_selection() == other
     assert overlay._session.selection is None
-    QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=second_point)
+    QTest.mouseClick(overlay, Qt.MouseButton.LeftButton, pos=second_point)
     assert overlay._session.selection == other
     assert overlay._canvas._toolbar.isVisible()
 
-    QTest.mouseMove(window, first_point)
+    move_pointer(overlay, first_point)
     assert overlay._displayed_selection() == other
 
 
@@ -194,22 +208,42 @@ def test_drag_from_smart_preview_creates_manual_selection(desktop, monkeypatch) 
     monkeypatch.setattr(overlay_module, "WindowSelection", WindowSelectionStub)
     tray.capture_requested.emit()
     overlay = wait_for_overlay(controller)
-    window = overlay.windowHandle()
     start, finish = QPoint(20, 30), QPoint(140, 150)
     expected = SelectionDrag(overlay._source_position(QPointF(start))).update(
         overlay._source_position(QPointF(finish)), overlay._frame.width_px, overlay._frame.height_px
     )
 
-    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=start)
     assert overlay._displayed_selection() == SelectionRect(0, 0, 500, 400)
-    QTest.mouseMove(window, start + QPoint(1, 1))
+    move_pointer(overlay, start + QPoint(1, 1), Qt.MouseButton.LeftButton)
     assert overlay._displayed_selection() == SelectionRect(0, 0, 500, 400)
-    QTest.mouseMove(window, finish)
+    move_pointer(overlay, finish, Qt.MouseButton.LeftButton)
     assert overlay._displayed_selection() == expected
     assert overlay._session.selection is None
-    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=finish)
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=finish)
     assert overlay._session.selection == expected
     assert overlay._canvas._toolbar.isVisible()
+
+
+def test_recording_opens_for_current_capture_selection(desktop, monkeypatch, tmp_path) -> None:
+    controller, _, tray, _ = desktop
+    monkeypatch.setattr(
+        controller_module.QStandardPaths, "writableLocation", lambda _location: str(tmp_path)
+    )
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(80, 70))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(340, 250))
+    selection = overlay._session.selection
+    QTest.mouseClick(overlay._canvas._toolbar._action_buttons["record"], Qt.MouseButton.LeftButton)
+    panel = controller._live_panel
+
+    assert panel._region == overlay.selection_geometry(selection)
+    assert panel._directory == tmp_path / "EasyToShot"
+    assert not overlay.isVisible()
+    panel.reject()
+    assert overlay.isVisible()
+    assert overlay._displayed_selection() == selection
 
 
 def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch) -> None:

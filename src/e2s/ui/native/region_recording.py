@@ -1,11 +1,13 @@
+import logging
 from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
-from shutil import copyfile, which
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 
+from imageio_ffmpeg import get_ffmpeg_exe
 from PySide6.QtCore import (
-    QMimeData,
+    QEvent,
+    QObject,
     QPoint,
     QProcess,
     QRect,
@@ -16,39 +18,53 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QDesktopServices, QImage, QKeySequence, QScreen, QShortcut
-from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
-from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtMultimedia import QAudioDevice, QMediaDevices
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QMenu,
     QMessageBox,
-    QSlider,
-    QSpinBox,
+    QPlainTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from e2s.capture.recording import RecordingSession
+from e2s.capture.recording_export import RecordingFormat, export_arguments
+from e2s.platform.windows.recording_audio import SystemAudioRecording
 from e2s.platform.windows.window_capture import exclude_capture_window
 from e2s.ui.native.annotation_toolbar import Command, describe_button
 from e2s.ui.native.live_capture import LiveSelectionOutline
+from e2s.ui.native.recording_annotation import RecordingAnnotation
 from e2s.ui.native.toolbar_icons import toolbar_icon
+
+_LOG = logging.getLogger(__name__)
+
+
+def _cleanup_recording(directory: TemporaryDirectory, attempts: int = 6) -> None:
+    directory.cleanup()
+    if not Path(directory.name).exists():
+        return
+    if attempts > 1:
+        QTimer.singleShot(
+            100, QApplication.instance(), lambda: _cleanup_recording(directory, attempts - 1)
+        )
+    else:
+        _LOG.warning("Could not remove temporary recording files")
 
 
 class Stage(Enum):
     READY = auto()
-    COUNTDOWN = auto()
     RECORDING = auto()
     PAUSED = auto()
     FINALIZING = auto()
     REVIEW = auto()
+    SAVED = auto()
 
 
 class RegionRecording(QDialog):
@@ -57,89 +73,100 @@ class RegionRecording(QDialog):
 
     def __init__(self, grab: Callable[[], QImage], destination: Path, size: QSize) -> None:
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
-        self.setWindowTitle("录像")
+        self.setWindowTitle("区域录像")
+        self._grab = grab
+        self._size = QSize(size)
         self._destination = destination
+        self._directory = destination.parent
         self._stage = Stage.READY
         self._closed = False
-        self._working = TemporaryDirectory(prefix="e2s-recording-")
+        self._working = TemporaryDirectory(prefix="e2s-recording-", ignore_cleanup_errors=True)
         self._video_path = Path(self._working.name) / "capture.mp4"
-        self._elapsed = 0
-        self._seconds_left = 0
-        self._delay = 0
-        self._fps = 30
-        self._quality = 3
-        self._ffmpeg = which("ffmpeg")
+        self._system_audio_path = Path(self._working.name) / "system.wav"
+        self._system_audio: SystemAudioRecording | None = None
+        self._has_system_audio = False
+        self._has_microphone = False
+        self._audio_device: QAudioDevice | None = None
+        self._annotation: RecordingAnnotation | None = None
         self._export_process: QProcess | None = None
         self._export_target: Path | None = None
         self._export_temp: Path | None = None
-        self._copy_after_export = False
         self._outline = LiveSelectionOutline("#ff4d4f")
         self._region = QRect()
         self._screen: QScreen | None = None
-        self._countdown = QTimer(self, interval=1000)
-        self._countdown.timeout.connect(self._count_down)
-        self._session = RecordingSession(grab, size, self._video_path, self)
+        self._session = RecordingSession(self._capture_frame, size, self._video_path, self)
         self._session.elapsed_changed.connect(self._show_elapsed)
         self._session.ready.connect(self._enter_review)
         self._session.failed.connect(self.failed)
-        self._audio_device = None
-        self._player = QMediaPlayer(self)
-        self._speaker = QAudioOutput(self)
-        self._player.setAudioOutput(self._speaker)
 
         self.setStyleSheet("""
             QDialog { background: #ffffff; }
-            QLabel, QToolButton { color: #262626; }
+            QLabel, QToolButton, QComboBox { color: #262626; }
             QToolButton { border: 0; border-radius: 6px; padding: 3px; }
             QToolButton:hover { background: #e6f4ff; }
+            QToolButton:checked { background: #bae0ff; }
             QToolButton::menu-indicator { image: none; width: 0; }
+            QComboBox { border: 1px solid #d9d9d9; border-radius: 6px; padding: 4px 8px; }
+            QComboBox:hover { border-color: #69b1ff; }
         """)
-        self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(8, 8, 8, 8)
-        self._video = QVideoWidget(self)
-        self._video.setFixedSize(400, 225)
-        self._video.hide()
-        self._layout.addWidget(self._video)
-        self._player.setVideoOutput(self._video)
-        self._timeline = QSlider(Qt.Orientation.Horizontal, self)
-        self._timeline.setAccessibleName("录像播放位置")
-        self._timeline.sliderMoved.connect(self._player.setPosition)
-        self._player.positionChanged.connect(self._timeline.setValue)
-        self._player.durationChanged.connect(self._duration_changed)
-        self._layout.addWidget(self._timeline)
-        self._trim_fields = QWidget(self)
-        fields = QHBoxLayout(self._trim_fields)
-        fields.setContentsMargins(0, 0, 0, 0)
-        self._trim_start = self._trim_time("起点（秒）", fields)
-        self._trim_end = self._trim_time("终点（秒）", fields)
-        self._trim_fields.hide()
-        self._layout.addWidget(self._trim_fields)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
         self._controls = QHBoxLayout()
-        self._layout.addLayout(self._controls)
+        layout.addLayout(self._controls)
         self._record = self._button("record_start", "开始录像", ("Ctrl+S",), self._toggle_recording)
         self._pause = self._button("record_pause", "暂停 / 继续", ("Space",), self._toggle_pause)
         self._clock = QLabel("00:00", self)
-        self._clock.setMinimumWidth(52)
+        self._clock.setMinimumWidth(50)
         self._clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._controls.addWidget(self._clock)
-        self._audio = self._button("microphone", "录制音频设备", (), None)
-        self._audio.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(self._audio)
+        self._format = QComboBox(self)
+        self._format.addItems([output_format.name for output_format in RecordingFormat])
+        self._format.setAccessibleName("录像保存格式")
+        self._format.currentIndexChanged.connect(self._update_controls)
+        self._controls.addWidget(self._format)
+        self._mic = self._button("microphone", "录制麦克风")
+        self._mic.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self._mic)
         menu.aboutToShow.connect(self._list_audio)
-        self._audio.setMenu(menu)
-        self._options = self._button("record_settings", "录像设置", (), self._show_options)
-        self._folder = self._button("record_folder", "打开录像文件夹", (), self._open_directory)
-        self._play = self._button("record_start", "播放 / 暂停预览", (), self._toggle_preview)
-        self._trim = self._button("record_trim", "裁剪录像", (), self._toggle_trim)
-        self._trim.setEnabled(self._ffmpeg is not None)
-        if self._ffmpeg is None:
-            self._trim.setToolTip("裁剪录像需要 FFmpeg")
+        self._mic.setMenu(menu)
+        self._speaker = self._button("speaker", "录制系统声音")
+        self._speaker.setCheckable(True)
+        self._annotate = self._button("pen", "录像标注", ("Ctrl+D",), self._toggle_annotation)
+        self._annotate.setCheckable(True)
         self._save = self._button("save", "保存录像", ("Ctrl+E",), self._save_video)
-        self._copy = self._button("copy", "复制录像文件", ("Ctrl+C",), self._copy_video)
+        self._button("record_folder", "打开录像文件夹", (), self._open_directory)
         self._button("cancel", "关闭录像", ("Esc",), self.reject)
+        self._status = QLabel(self)
+        self._status.setWordWrap(True)
+        self._status.setMaximumWidth(440)
+        self._status.hide()
+        layout.addWidget(self._status)
         self._update_controls()
+        QApplication.instance().installEventFilter(self)
 
-    def _button(self, icon: str, name: str, keys: tuple[str, ...], action) -> QToolButton:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            self._stage in (Stage.RECORDING, Stage.PAUSED)
+            and event.type() == QEvent.Type.Show
+            and isinstance(watched, QWidget)
+            and watched.isWindow()
+        ):
+            parent = watched.parentWidget()
+            while parent is not None:
+                if parent in (self, self._annotation):
+                    exclude_capture_window(int(watched.winId()))
+                    break
+                parent = parent.parentWidget()
+        return super().eventFilter(watched, event)
+
+    @property
+    def _output_format(self) -> RecordingFormat:
+        return RecordingFormat(self._format.currentText().lower())
+
+    def _button(
+        self, icon: str, name: str, keys: tuple[str, ...] = (),
+        action: Callable[[], None] | None = None,
+    ) -> QToolButton:
         button = QToolButton(self)
         button.setIcon(toolbar_icon(icon))
         button.setIconSize(QSize(22, 22))
@@ -147,9 +174,7 @@ class RegionRecording(QDialog):
         if keys:
             describe_button(button, Command(name, keys))
             for key in keys:
-                shortcut = QShortcut(QKeySequence(key), self)
-                shortcut.setAutoRepeat(False)
-                shortcut.activated.connect(lambda button=button: button.click() if button.isVisible() else None)
+                self._bind_shortcut(key, self, button)
         else:
             button.setToolTip(name)
             button.setAccessibleName(name)
@@ -158,17 +183,30 @@ class RegionRecording(QDialog):
         self._controls.addWidget(button)
         return button
 
+    @staticmethod
+    def _bind_shortcut(key: str, window: QWidget, button: QToolButton) -> None:
+        def trigger() -> None:
+            if button.isVisible() and not (
+                key == "Space" and isinstance(QApplication.focusWidget(), QPlainTextEdit)
+            ):
+                button.click()
+
+        shortcut = QShortcut(QKeySequence(key), window)
+        shortcut.setAutoRepeat(False)
+        shortcut.activated.connect(trigger)
+
     def present(self, screen: QScreen, region: QRect) -> bool:
         self._screen, self._region = screen, region
         self.winId()
         self.windowHandle().setScreen(screen)
         self.adjustSize()
-        if exclude_capture_window(int(self.winId())) or self._place_outside_region():
-            self.show()
-            self._place_outside_region()
-            self._outline.show_around(screen, region)
-            return True
-        return False
+        outside_region = self._place_outside_region()
+        self.show()
+        if not exclude_capture_window(int(self.winId())) and not outside_region:
+            self.hide()
+            return False
+        self._outline.show_around(screen, region)
+        return True
 
     def _place_outside_region(self) -> bool:
         if self._screen is None:
@@ -176,10 +214,12 @@ class RegionRecording(QDialog):
         area = self._screen.availableGeometry().adjusted(8, 8, -8, -8)
         width, height = self.width() + 16, self.height() + 42
         region = self._region
-        x = max(area.left(), min(region.right() - width, area.right() - width))
+        x = max(area.left(), min(region.left(), area.right() - width))
         y = max(area.top(), min(region.top(), area.bottom() - height))
-        for point in (QPoint(x, region.bottom() + 6), QPoint(x, region.top() - height - 6),
-                      QPoint(region.right() + 6, y), QPoint(region.left() - width - 6, y)):
+        for point in (
+            QPoint(x, region.top() - height - 6), QPoint(x, region.bottom() + 6),
+            QPoint(region.right() + 6, y), QPoint(region.left() - width - 6, y),
+        ):
             box = QRect(point, QSize(width, height))
             if area.contains(box) and not box.intersects(region):
                 self.move(point + QPoint(8, 34))
@@ -193,270 +233,247 @@ class RegionRecording(QDialog):
 
     def _toggle_recording(self) -> None:
         if self._stage is Stage.READY:
-            if self._delay:
-                self._stage = Stage.COUNTDOWN
-                self._seconds_left = self._delay
-                self._clock.setText(str(self._seconds_left))
-                self._countdown.start()
-            else:
-                self._begin_recording()
-        elif self._stage is Stage.COUNTDOWN:
-            self._countdown.stop()
-            self._stage = Stage.READY
-            self._clock.setText("00:00")
+            self._begin_recording()
         elif self._stage in (Stage.RECORDING, Stage.PAUSED):
             self._stage = Stage.FINALIZING
+            if self._annotation is not None:
+                self._annotation.hide()
+            self._finish_system_audio()
+            self._update_controls()
             self._session.finish()
-        self._update_controls()
-
-    def _count_down(self) -> None:
-        self._seconds_left -= 1
-        if self._seconds_left > 0:
-            self._clock.setText(str(self._seconds_left))
-            return
-        self._countdown.stop()
-        self._begin_recording()
 
     def _begin_recording(self) -> None:
+        self._show_status("")
+        audio = self._audio_device if self._output_format.supports_audio else None
+        if self._output_format.supports_audio and self._speaker.isChecked():
+            try:
+                self._system_audio = SystemAudioRecording(self._system_audio_path)
+                self._system_audio.start()
+            except (ImportError, OSError, LookupError, ValueError):
+                self._finish_system_audio()
+                self._show_status("无法录制系统声音，请检查 Windows 的默认播放设备。")
+                return
+        self._has_microphone = audio is not None
         self._stage = Stage.RECORDING
         self._update_controls()
-        self._session.start(self._audio_device, fps=self._fps, quality=self._quality)
+        self._session.start(audio)
+
+    def _finish_system_audio(self) -> None:
+        audio, self._system_audio = self._system_audio, None
+        if audio is None:
+            return
+        try:
+            audio.close()
+            self._has_system_audio = not audio.failed
+        except OSError:
+            self._has_system_audio = False
+        if not self._has_system_audio and not self._closed:
+            self._show_status("系统声音录制失败，仍可保存画面及已录制的麦克风音频。")
 
     def _toggle_pause(self) -> None:
-        if self._stage in (Stage.RECORDING, Stage.PAUSED):
-            paused = self._stage is Stage.RECORDING
-            self._stage = Stage.PAUSED if paused else Stage.RECORDING
-            self._session.set_paused(paused)
-            self._update_controls()
+        if self._stage not in (Stage.RECORDING, Stage.PAUSED):
+            return
+        paused = self._stage is Stage.RECORDING
+        self._stage = Stage.PAUSED if paused else Stage.RECORDING
+        self._session.set_paused(paused)
+        if self._system_audio is not None:
+            self._system_audio.set_paused(paused)
+        self._update_controls()
+
+    def _toggle_annotation(self) -> None:
+        editing = self._annotate.isChecked()
+        if editing and self._annotation is None and self._screen is not None:
+            try:
+                self._annotation = RecordingAnnotation(
+                    self._screen, self._region, self._size, self._grab
+                )
+                self._annotation.editing_cancelled.connect(self._annotate.click)
+                for key, button in (
+                    ("Ctrl+D", self._annotate), ("Ctrl+S", self._record), ("Space", self._pause)
+                ):
+                    self._bind_shortcut(key, self._annotation, button)
+            except MemoryError:
+                self._annotate.setChecked(False)
+                self._show_status("无法分配录像标注画布。")
+                return
+        if self._annotation is not None and not self._annotation.set_editing(editing):
+            self._annotate.setChecked(False)
+            self._show_status("当前系统无法将标注工具栏排除在录像之外。")
+        self.raise_()
+
+    def _capture_frame(self) -> QImage:
+        frame = self._grab()
+        return self._annotation.capture_frame(frame) if self._annotation is not None else frame
 
     def _show_elapsed(self, milliseconds: int) -> None:
-        if milliseconds // 1000 != self._elapsed:
-            self._elapsed = milliseconds // 1000
-            self._clock.setText(f"{self._elapsed // 60:02d}:{self._elapsed % 60:02d}")
+        minutes, seconds = divmod(milliseconds // 1000, 60)
+        text = f"{minutes:02d}:{seconds:02d}"
+        if self._clock.text() != text:
+            self._clock.setText(text)
 
     def _list_audio(self) -> None:
-        menu = self._audio.menu()
+        menu = self._mic.menu()
         menu.clear()
-        menu.addAction("静音", lambda: self._select_audio(None))
-        for device in QMediaDevices.audioInputs():
-            action = menu.addAction(device.description(), lambda device=device: self._select_audio(device))
+        devices: list[tuple[str, QAudioDevice | None]] = [("关闭麦克风", None)]
+        devices.extend((device.description(), device) for device in QMediaDevices.audioInputs())
+        for name, device in devices:
+            action = menu.addAction(name, lambda device=device: self._select_audio(device))
             action.setCheckable(True)
             action.setChecked(device == self._audio_device)
 
-    def _select_audio(self, device) -> None:
+    def _select_audio(self, device: QAudioDevice | None) -> None:
         self._audio_device = device
-        self._audio.setIcon(toolbar_icon("microphone" if device is None else "microphone_on"))
-        self._audio.setToolTip("录制音频设备" if device is None else device.description())
-
-    def _show_options(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("录像设置")
-        layout = QFormLayout(dialog)
-        options = []
-        for label, low, high, initial in (
-            ("开始延迟（秒）", 0, 10, self._delay),
-            ("帧率", 10, 60, self._fps),
-            ("画质", 0, 4, self._quality),
-        ):
-            field = QSpinBox(dialog)
-            field.setRange(low, high)
-            field.setValue(initial)
-            layout.addRow(label, field)
-            options.append(field)
-        apply = QToolButton(dialog)
-        apply.setText("应用")
-        apply.clicked.connect(dialog.accept)
-        layout.addRow(apply)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._delay, self._fps, self._quality = (field.value() for field in options)
+        icon = "microphone" if device is None else "microphone_on"
+        self._mic.setIcon(toolbar_icon(icon))
+        self._update_controls()
 
     def _open_directory(self) -> None:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._destination.parent)))
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self._show_status("无法创建录像文件夹。")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._directory))):
+            self._show_status("无法打开录像文件夹。")
 
-    def _enter_review(self, path: Path) -> None:
+    def _enter_review(self, _path: Path) -> None:
         self._stage = Stage.REVIEW
         self._outline.hide()
-        self._player.setSource(QUrl.fromLocalFile(str(path)))
-        self._video.show()
         self._update_controls()
-        self.adjustSize()
-        self._place_outside_region()
-
-    def _toggle_preview(self) -> None:
-        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self._player.pause()
-        else:
-            self._player.play()
+        self._save.setFocus()
 
     def _update_controls(self) -> None:
-        selecting = self._stage is Stage.READY
+        ready = self._stage is Stage.READY
         recording = self._stage in (Stage.RECORDING, Stage.PAUSED)
         review = self._stage is Stage.REVIEW
-        is_exporting = self._export_process is not None
-        self._audio.setEnabled(selecting)
-        self._options.setEnabled(selecting)
+        audio_enabled = ready and self._output_format.supports_audio
+        for button in (self._mic, self._speaker, self._format):
+            button.setVisible(ready)
+        self._mic.setEnabled(audio_enabled)
+        self._speaker.setEnabled(audio_enabled)
+        mic_label = self._audio_device.description() if self._audio_device else "录制麦克风"
+        self._mic.setToolTip(mic_label if audio_enabled else "仅 MP4 支持麦克风录音")
+        self._speaker.setToolTip("录制系统声音" if audio_enabled else "仅 MP4 支持系统录音")
         self._pause.setVisible(recording)
-        self._timeline.setVisible(review)
-        self._trim.setVisible(review)
-        self._trim.setEnabled(self._ffmpeg is not None and not is_exporting and self._player.duration() > 0)
-        self._copy.setVisible(review)
-        self._copy.setEnabled(not is_exporting)
-        self._save.setEnabled(not is_exporting)
-        self._record.setVisible(not review)
-        self._record.setEnabled(self._stage is not Stage.FINALIZING)
-        self._record.setIcon(toolbar_icon("record_start" if selecting else "record_stop"))
-        label = "开始录像" if selecting else "取消倒计时" if self._stage is Stage.COUNTDOWN else "结束录像"
+        self._annotate.setVisible(recording)
+        self._record.setVisible(ready or recording)
+        self._record.setIcon(toolbar_icon("record_start" if ready else "record_stop"))
+        label = "开始录像" if ready else "结束录像"
         describe_button(self._record, Command(label, ("Ctrl+S",)))
-        self._pause.setIcon(toolbar_icon("record_start" if self._stage is Stage.PAUSED else "record_pause"))
+        self._pause.setIcon(toolbar_icon(
+            "record_start" if self._stage is Stage.PAUSED else "record_pause"
+        ))
         self._save.setVisible(review)
-        self._play.setVisible(review)
-
-    def _trim_time(self, label: str, fields: QHBoxLayout) -> QDoubleSpinBox:
-        field = QDoubleSpinBox(self._trim_fields)
-        field.setDecimals(2)
-        field.setAccessibleName(label)
-        fields.addWidget(QLabel(label, self._trim_fields))
-        fields.addWidget(field)
-        return field
-
-    def _duration_changed(self, duration: int) -> None:
-        self._timeline.setRange(0, duration)
-        self._trim_start.setRange(0, duration / 1000)
-        self._trim_end.setRange(0, duration / 1000)
-        self._trim_end.setValue(duration / 1000)
-        self._update_controls()
-
-    def _toggle_trim(self) -> None:
-        self._player.pause()
-        self._trim_fields.setVisible(self._trim_fields.isHidden())
+        self._save.setEnabled(self._export_process is None)
         self.adjustSize()
 
     def _save_video(self) -> None:
         if self._stage is not Stage.REVIEW or self._export_process is not None:
             return
-        self._player.pause()
-        dialog = QFileDialog(self, "保存录像", str(self._destination), "MP4 视频 (*.mp4)")
+        output_format = self._output_format
+        default_path = self._destination.with_suffix(f".{output_format.value}")
+        try:
+            default_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            default_path = Path.home() / default_path.name
+        dialog = QFileDialog(self, "保存录像", str(default_path), output_format.name_filter)
         dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptSave)
-        dialog.setDefaultSuffix("mp4")
+        dialog.setDefaultSuffix(output_format.value)
         if not dialog.exec():
             return
         path = Path(dialog.selectedFiles()[0])
-        if path.suffix.lower() != ".mp4":
-            path = path.with_suffix(".mp4")
+        if path.suffix.lower() != f".{output_format.value}":
+            path = path.with_suffix(f".{output_format.value}")
             if path.exists() and QMessageBox.question(
                 self, "覆盖录像", f"已存在同名文件，是否覆盖？\n{path}"
             ) != QMessageBox.StandardButton.Yes:
                 return
         self._export(path)
 
-    def _copy_video(self) -> None:
-        if self._stage is not Stage.REVIEW or self._export_process is not None:
-            return
-        self._player.pause()
-        directory = self._destination.parent / "EasyToShot"
+    def _export(self, path: Path) -> None:
         try:
-            directory.mkdir(parents=True, exist_ok=True)
+            executable = get_ffmpeg_exe()
             with NamedTemporaryFile(
-                dir=directory, prefix=f"{self._destination.stem}_", suffix=".mp4", delete=False
+                dir=path.parent, prefix=".e2s-", suffix=path.suffix, delete=False
             ) as handle:
-                path = Path(handle.name)
-        except OSError:
-            self._show_export_error("无法创建要复制的录像文件。")
-            return
-        self._export(path, copy=True)
-
-    def _export(self, path: Path, *, copy: bool = False) -> None:
-        self._export_target = path
-        self._copy_after_export = copy
-        start, end = self._trim_start.value(), self._trim_end.value()
-        if not self._trim_fields.isHidden() and end <= start:
-            self._finish_export(False, "录像终点必须晚于起点。")
-            return
-        try:
-            with NamedTemporaryFile(dir=path.parent, prefix=".e2s-", suffix=".mp4", delete=False) as handle:
                 self._export_temp = Path(handle.name)
-            if self._trim_fields.isHidden():
-                copyfile(self._video_path, self._export_temp)
-                self._finish_export(True)
-                return
-        except OSError:
-            self._finish_export(False)
+        except (OSError, RuntimeError):
+            self._show_status("无法启动录像导出，请检查编码器和目标文件夹。")
             return
+        self._export_target = path
         process = QProcess(self)
         self._export_process = process
-        process.finished.connect(lambda code, _status: self._finish_export(code == 0))
+        process.finished.connect(self._export_finished)
         process.errorOccurred.connect(self._export_failed)
+        self._show_status("正在保存录像…")
         self._update_controls()
-        process.start(self._ffmpeg, [
-            "-nostdin", "-loglevel", "error", "-y", "-ss", str(start),
-            "-i", str(self._video_path), "-t", str(end - start),
-            "-map", "0:v:0", "-map", "0:a?", "-vf", f"fps={self._fps}",
-            "-c:v", "libx264", "-preset", "fast",
-            "-c:a", "aac", "-movflags", "+faststart", str(self._export_temp),
-        ])
+        process.start(executable, export_arguments(
+            self._video_path, self._export_temp, self._output_format,
+            system_audio=self._system_audio_path if self._has_system_audio else None,
+            has_microphone=self._has_microphone,
+        ))
+
+    def _export_finished(self, code: int, status: QProcess.ExitStatus) -> None:
+        self._finish_export(code == 0 and status == QProcess.ExitStatus.NormalExit)
 
     def _export_failed(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.ProcessError.FailedToStart:
-            self._finish_export(False, "无法启动 FFmpeg 裁剪录像。")
+            self._finish_export(False)
 
-    def _finish_export(self, succeeded: bool, message: str = "") -> None:
+    def _finish_export(self, succeeded: bool) -> None:
         process, self._export_process = self._export_process, None
         if process is not None:
+            if not succeeded and not self._closed:
+                details = bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
+                _LOG.warning("Recording export failed: %s", details.strip() or process.errorString())
             process.deleteLater()
         path, self._export_target = self._export_target, None
         temporary, self._export_temp = self._export_temp, None
-        if path is None:
+        if path is None or temporary is None:
             return
         try:
+            succeeded = succeeded and not self._closed and temporary.stat().st_size > 0
             if succeeded:
-                if temporary is None or not temporary.stat().st_size:
-                    raise OSError("Empty video")
                 temporary.replace(path)
         except OSError:
             succeeded = False
         finally:
-            self._clean_path(temporary)
-        if not succeeded:
-            if self._copy_after_export:
-                self._clean_path(path)
-            if not self._closed:
-                self._show_export_error(message or "无法生成录像文件，请重试。")
-        elif self._copy_after_export:
-            data = QMimeData()
-            data.setUrls([QUrl.fromLocalFile(str(path))])
-            QApplication.clipboard().setMimeData(data)
-        if succeeded:
-            self.completed.emit(path)
-            self.accept()
-        elif not self._closed:
-            self._update_controls()
-
-    def _show_export_error(self, message: str) -> None:
-        QMessageBox.warning(self, "导出录像", message)
-
-    @staticmethod
-    def _clean_path(path: Path | None) -> None:
-        if path is not None:
             try:
-                path.unlink(missing_ok=True)
+                temporary.unlink(missing_ok=True)
             except OSError:
-                pass
+                _LOG.warning("Could not remove temporary recording export")
+        if self._closed:
+            return
+        if succeeded:
+            self._directory = path.parent
+            self._stage = Stage.SAVED
+            self._show_status(f"已保存 {path.name}")
+            self.completed.emit(path)
+        else:
+            self._show_status("无法保存录像，请检查目标文件夹后重试。")
+        self._update_controls()
+
+    def _show_status(self, message: str) -> None:
+        self._status.setText(message)
+        self._status.setVisible(bool(message))
+        self.adjustSize()
 
     def done(self, result: int) -> None:
         if not self._closed:
             self._closed = True
-            self._countdown.stop()
+            QApplication.instance().removeEventFilter(self)
             self._session.abort()
+            self._finish_system_audio()
             self._outline.close()
+            if self._annotation is not None:
+                self._annotation.close()
+                self._annotation.deleteLater()
+                self._annotation = None
             if self._export_process is not None:
                 self._export_process.kill()
                 self._export_process.waitForFinished(500)
                 if self._export_process is not None:
                     self._finish_export(False)
-            self._player.stop()
-            self._player.setSource(QUrl())
-            try:
-                self._working.cleanup()
-            except OSError:
-                pass
-        super().done(result)
+            # The Qt encoder can retain its file handle briefly after stop().
+            _cleanup_recording(self._working)
+        super().done(QDialog.DialogCode.Accepted if self._stage is Stage.SAVED else result)

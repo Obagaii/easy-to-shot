@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QObject, QSize, QTimer, QUrl, Signal
+from PySide6.QtCore import QElapsedTimer, QObject, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtMultimedia import (
     QAudioDevice,
@@ -33,6 +33,7 @@ class RecordingSession(QObject):
         self._is_finalizing = False
         self._can_write = True
         self._timer = QTimer(self, interval=33)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._send_frame)
         self._session = QMediaCaptureSession(self)
         self._recorder = QMediaRecorder(self)
@@ -63,9 +64,6 @@ class RecordingSession(QObject):
         self._recorder.setMediaFormat(media_format)
         self._clock.start()
         self._recorder.record()
-        if self._recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
-            self._timer.start()
-            self._send_frame()
 
     def set_paused(self, paused: bool) -> None:
         if paused:
@@ -75,12 +73,14 @@ class RecordingSession(QObject):
         else:
             self._clock.restart()
             self._recorder.record()
-            self._timer.start()
 
     def finish(self) -> None:
         self._timer.stop()
         self._is_finalizing = True
-        self._recorder.stop()
+        if self._recorder.recorderState() == QMediaRecorder.RecorderState.StoppedState:
+            self._on_state(QMediaRecorder.RecorderState.StoppedState)
+        else:
+            self._recorder.stop()
 
     def abort(self) -> None:
         self._is_finalizing = False
@@ -111,6 +111,9 @@ class RecordingSession(QObject):
             self._can_write = True
 
     def _on_state(self, state: QMediaRecorder.RecorderState) -> None:
+        if state == QMediaRecorder.RecorderState.RecordingState:
+            self._timer.start()
+            self._send_frame()
         if state != QMediaRecorder.RecorderState.StoppedState or not self._is_finalizing:
             return
         self._is_finalizing = False

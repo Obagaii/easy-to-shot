@@ -50,6 +50,12 @@ _GROUPS = (
     ("barcode", "record", "pin", "scroll", "save"),
     ("cancel", "copy"),
 )
+_RECORDING_GROUPS = (
+    (Tool.SELECT, Tool.RECTANGLE, Tool.ELLIPSE, Tool.ARROW, Tool.PEN, Tool.TEXT,
+     Tool.RECT_HIGHLIGHT, Tool.ERASER),
+    ("undo", "redo"),
+    ("cancel",),
+)
 _FAMILIES = (HIGHLIGHT_TOOLS, ERASER_TOOLS)
 _PRIMARY = {tool: group[0] for group in _FAMILIES for tool in group}
 
@@ -70,11 +76,13 @@ class AnnotationToolbar(QFrame):
     tool_changed = Signal(object)
     action_requested = Signal(str)
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, *, recording: bool = False) -> None:
         super().__init__(parent)
         self.setObjectName("annotationToolbar")
         self.setProperty("toolbarSurface", True)
-        self.setAccessibleName("截图工具栏")
+        self.setAccessibleName("录像标注工具栏" if recording else "截图工具栏")
+        self._groups = _RECORDING_GROUPS if recording else _GROUPS
+        self._recording = recording
         self.setStyleSheet(CAPTURE_CONTROLS_STYLE)
         self._rows = QVBoxLayout(self)
         self._rows.setContentsMargins(_MARGINS, 5, _MARGINS, 5)
@@ -90,14 +98,15 @@ class AnnotationToolbar(QFrame):
         self._buttons: dict[Tool, QToolButton] = {}
         self._action_buttons: dict[str, QToolButton] = {}
         self._variants = {group[0]: group[0] for group in _FAMILIES}
-        for index, group in enumerate(_GROUPS):
+        for index, group in enumerate(self._groups):
             if index:
                 self._main_buttons.append(self._separator())
             for item in group:
                 self._main_buttons.append(self._button(item))
-        self._action_buttons["copy"].setObjectName("copyAnnotation")
+        if not recording:
+            self._action_buttons["copy"].setObjectName("copyAnnotation")
         self._available_width = 0
-        self.set_tool(Tool.MOVE)
+        self.set_tool(Tool.SELECT if recording else Tool.MOVE)
         self.set_history(False, False)
 
     @property
@@ -105,18 +114,18 @@ class AnnotationToolbar(QFrame):
         buttons = len(self._buttons) + len(self._action_buttons)
         return (
             2 * _MARGINS + self._drag_handle.width() + buttons * _BUTTON_SIZE
-            + (len(_GROUPS) - 1) * _SEPARATOR_WIDTH
+            + (len(self._groups) - 1) * _SEPARATOR_WIDTH
             + (len(self._main_buttons) - 1) * _BUTTON_GAP
         )
 
     def shortcuts(self) -> list[tuple[tuple[str, ...], Callable[[], None]]]:
         tools = [
             (command.keys, lambda tool=tool: self.activate_tool(tool))
-            for tool, command in _TOOL_COMMANDS.items()
+            for tool, command in _TOOL_COMMANDS.items() if tool in self._buttons
         ]
         actions = [
             (command.keys, self._action_buttons[name].click)
-            for name, command in _ACTION_COMMANDS.items()
+            for name, command in _ACTION_COMMANDS.items() if name in self._action_buttons
         ]
         return [*tools, *actions]
 
@@ -192,6 +201,9 @@ class AnnotationToolbar(QFrame):
         else:
             button.setIcon(toolbar_icon(item))
             button.clicked.connect(lambda: self.action_requested.emit(item))
-            describe_button(button, _ACTION_COMMANDS[item])
+            command = _ACTION_COMMANDS[item]
+            if self._recording and item == "cancel":
+                command = Command("返回桌面操作", command.keys)
+            describe_button(button, command)
             self._action_buttons[item] = button
         return button

@@ -89,7 +89,7 @@ class CaptureOverlay(QWidget):
         self.windowHandle().setScreen(screen)
         self.setGeometry(self._frame.geometry_dip)
         self.showFullScreen()
-        if QApplication.platformName() == "windows":
+        if self._canvas is None and QApplication.platformName() == "windows":
             self._window_selection = WindowSelection(int(self.winId()))
             self._update_hover(QPointF(self.mapFromGlobal(QCursor.pos())))
         self.reactivate()
