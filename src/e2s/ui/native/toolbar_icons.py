@@ -30,6 +30,7 @@ _PATHS = {
     "pin": "m15 3 6 6-4 4q1 4-2 7L4 9q3-3 7-2zm-5 12-7 7",
     "accept": "m4 12 5 5L20 6",
     "cancel": "M5 5l14 14M19 5 5 19",
+    "ocr": "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5M7 8h10M7 12h10m-10 4h7",
     "barcode_marker": "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5m4-9h3v3H7zm7 0h3v3h-3zm-7 7h3v3H7zm7 0h3v3h-3z",
     "barcode": "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5m4-9h3v3H7zm7 0h3v3h-3z"
                "m-7 7h3v3H7zm7 0h2v2h-2zm4 2v2m-4 0h2",

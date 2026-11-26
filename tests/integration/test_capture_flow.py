@@ -1,13 +1,20 @@
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
 from time import sleep
+from uuid import uuid4
 
 import pytest
 import zxingcpp
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QToolButton,
@@ -18,12 +25,16 @@ from e2s.annotation.elements import Tool
 from e2s.app import capture_output
 from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
+from e2s.capture import translation
 from e2s.capture.geometry import SelectionDrag, SelectionRect
 from e2s.capture.service import CaptureFrame
+from e2s.platform.windows import credentials
 from e2s.platform.windows.clipboard import ClipboardError
 from e2s.storage.history import HistoryService, HistoryStore
 from e2s.ui.native import overlay as overlay_module
 from e2s.ui.native import qr_results
+from e2s.ui.native.deepseek_settings import DeepSeekSettingsDialog
+from e2s.ui.native.recognition_results import RecognitionResults
 from e2s.ui.native.tray import Tray, create_app_icon
 from e2s.ui.native.workbench import Workbench
 
@@ -710,3 +721,101 @@ def test_scan_codes_place_markers_and_copy_the_selected_result(desktop, monkeypa
     monkeypatch.setattr(qr_results, "_copy_text", copied.append)
     popup.findChild(QPushButton).click()
     assert copied == [payload]
+
+def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.MonkeyPatch) -> None:
+    controller, workbench, _, screen = desktop
+    monkeypatch.setattr(credentials, "_DEEPSEEK_CREDENTIAL", f"EasyToShot/Test/{uuid4()}")
+    geometry, dpr = screen.geometry(), screen.devicePixelRatio()
+    pixels = round(geometry.width() * dpr), round(geometry.height() * dpr)
+    image = Image.new("RGBA", pixels, "white")
+    font_path = Path(os.environ["WINDIR"]) / "Fonts" / "msyh.ttc"
+    font = ImageFont.truetype(str(font_path), 42)
+    drawing = ImageDraw.Draw(image)
+    drawing.text((75, 70), "截图文字识别", font=font, fill="black")
+    drawing.text((75, 133), "Easy to Shot", font=font, fill="black")
+    frozen = QImage(image.tobytes(), *image.size, QImage.Format.Format_RGBA8888).copy()
+    monkeypatch.setattr(
+        controller_module, "capture_frame", lambda _: CaptureFrame("ocr", geometry, frozen)
+    )
+
+    requests = []
+
+    class DeepSeekHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, self.headers["Authorization"], payload))
+            if len(requests) == 1:
+                self.send_response(401)
+                self.end_headers()
+                return
+            translated = json.dumps({"choices": [{
+                "finish_reason": "stop", "message": {"content": "Screenshot text recognition"},
+            }]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(translated)))
+            self.end_headers()
+            self.wfile.write(translated)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DeepSeekHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        translation, "_DEEPSEEK_URL", f"http://127.0.0.1:{server.server_port}/chat/completions"
+    )
+    try:
+        workbench.capture_requested.emit()
+        overlay = wait_for_overlay(controller)
+        QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+        QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(420, 230))
+        selection = overlay._session.selection
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier)
+        assert controller._recognizing_overlay is overlay
+        wait_for(lambda: controller._recognizing_overlay is None, "OCR completion")
+        result = overlay.findChild(RecognitionResults)
+        assert result is not None, overlay._canvas._feedback.text()
+        assert result.isVisible()
+        assert result._source.toPlainText() == "截图文字识别\nEasy to Shot"
+        assert not requests
+
+        result._translate.click()
+        settings = result.findChild(DeepSeekSettingsDialog)
+        assert settings.isVisible()
+        assert settings._key.echoMode() == QLineEdit.EchoMode.Password
+        settings._key.setText("test-only-key")
+        settings._save_key()
+        assert credentials.get_deepseek_key() == "test-only-key"
+        assert not requests
+        result._source.setPlainText("截图文字识别")
+        result._target.setCurrentText("英语")
+        result._translate.click()
+        wait_for(lambda: "API Key 无效" in result._status.text(), "authentication error")
+        result._translate.click()
+        wait_for(lambda: bool(result._result.toPlainText()), "translated text")
+
+        assert result._result.toPlainText() == "Screenshot text recognition"
+        assert len(requests) == 2
+        for path, auth, payload in requests:
+            assert path == "/chat/completions"
+            assert auth == "Bearer test-only-key"
+            assert payload["model"] == translation.DEEPSEEK_MODEL
+            assert "English" in payload["messages"][0]["content"]
+            assert payload["messages"][1] == {"role": "user", "content": "截图文字识别"}
+
+        result.reject()
+        assert controller._overlay is overlay
+        assert overlay._session.selection == selection
+    finally:
+        credentials.delete_deepseek_key()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+
+def wait_for(check, description: str) -> None:
+    for _ in range(1500):
+        QApplication.processEvents()
+        if check():
+            return
+        sleep(0.01)
+    pytest.fail(f"Timed out waiting for {description}.")

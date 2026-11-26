@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
 from e2s.capture.geometry import SelectionRect, move_selection
+from e2s.capture.ocr import OcrError, ScreenshotRecognizer
 from e2s.capture.qr import CodeDetection, scan_codes
 from e2s.capture.service import CaptureError, capture_frame
 from e2s.capture.session import CaptureSession, CaptureSource, OutputSnapshot
@@ -35,6 +36,7 @@ from e2s.platform.windows.window_capture import scroll_window_below
 from e2s.ui.native.live_capture import grab_region
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.pinned_image import PinnedImage
+from e2s.ui.native.recognition_results import RecognitionResults
 from e2s.ui.native.region_recording import RegionRecording
 from e2s.ui.native.scrolling_capture import ScrollingCapture
 from e2s.ui.native.tray import Tray
@@ -60,6 +62,7 @@ class AppController(QObject):
     output_succeeded = Signal(object, object, str)
     _save_finished = Signal(object)
     _scan_finished = Signal(object, object, str)
+    _ocr_finished = Signal(str, str)
 
     def __init__(self, app: QApplication, workbench: Workbench, tray: Tray) -> None:
         super().__init__()
@@ -76,9 +79,12 @@ class AppController(QObject):
         self._is_closing = False
         self._pinned_images: set[PinnedImage] = set()
         self._pending_save: tuple[OutputSnapshot, _OutputWindow] | None = None
+        self._recognizer = ScreenshotRecognizer()
+        self._recognizing_overlay: CaptureOverlay | None = None
         self._save_pool = QThreadPool(self)
         self._save_finished.connect(self._on_save_finished, Qt.ConnectionType.QueuedConnection)
         self._scan_finished.connect(self._on_scan_finished, Qt.ConnectionType.QueuedConnection)
+        self._ocr_finished.connect(self._on_ocr_finished, Qt.ConnectionType.QueuedConnection)
 
         self._capture_timer = QTimer(self)
         self._capture_timer.setSingleShot(True)
@@ -222,8 +228,37 @@ class AppController(QObject):
         if name == "barcode":
             overlay.set_output_feedback("正在扫描二维码…", is_pending=True)
             self._save_pool.start(lambda: self._scan_snapshot(overlay, snapshot))
+        elif name == "ocr":
+            self._start_ocr(snapshot, overlay)
         elif name in ("scroll", "record"):
             self._start_live_capture(name, snapshot, overlay, screen)
+
+    def _start_ocr(self, snapshot: OutputSnapshot, overlay: CaptureOverlay) -> None:
+        if self._recognizing_overlay is not None:
+            overlay.set_output_feedback("上一项文字识别仍在运行，请稍后重试。")
+            return
+        self._recognizing_overlay = overlay
+        overlay.set_output_feedback("正在本地识别文字…", is_pending=True)
+        self._save_pool.start(lambda: self._recognize_snapshot(snapshot))
+
+    def _recognize_snapshot(self, snapshot: OutputSnapshot) -> None:
+        try:
+            text = self._recognizer.recognize(snapshot)
+        except OcrError as error:
+            self._ocr_finished.emit("", str(error))
+        else:
+            self._ocr_finished.emit(text, "" if text else "选区内未识别到文字。")
+
+    @Slot(str, str)
+    def _on_ocr_finished(self, text: str, message: str) -> None:
+        overlay, self._recognizing_overlay = self._recognizing_overlay, None
+        if overlay is None or self._overlay is not overlay:
+            return
+        overlay.set_output_feedback(message)
+        if text:
+            dialog = RecognitionResults(text, overlay)
+            dialog.finished.connect(overlay.reactivate)
+            dialog.open()
 
     def _scan_snapshot(self, overlay: CaptureOverlay, snapshot: OutputSnapshot) -> None:
         try:
