@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from e2s.platform.windows.displays import (
 )
 from e2s.platform.windows.file_dialogs import choose_image_save_path
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, GlobalHotkey
+from e2s.platform.windows.uia_selection import WindowsSelector
 from e2s.platform.windows.window_capture import scroll_window_below
 from e2s.ui.native.live_capture import grab_region
 from e2s.ui.native.overlay import CaptureOverlay
@@ -44,6 +46,7 @@ from e2s.ui.native.tray import Tray
 from e2s.ui.native.workbench import Workbench
 
 _OutputWindow = CaptureOverlay | PinnedImage | ScrollingCapture
+type _OcrKey = tuple[SelectionRect, bytes]
 _CAPTURE_SETTLE_MS = 100
 _SAVE_ERRORS = {
     "overwrite_not_confirmed": "目标文件已存在，请重新选择文件或确认覆盖。",
@@ -71,6 +74,7 @@ class AppController(QObject):
         self._workbench = workbench
         self._tray = tray
         self._hotkey = GlobalHotkey(app, self.start_capture)
+        self._selector = WindowsSelector(self)
         self._capture_screen: QScreen | None = None
         self._capture_source = CaptureSource.HOTKEY
         self._overlay: CaptureOverlay | None = None
@@ -81,7 +85,8 @@ class AppController(QObject):
         self._pinned_images: set[PinnedImage] = set()
         self._pending_save: tuple[OutputSnapshot, _OutputWindow] | None = None
         self._recognizer = ScreenshotRecognizer()
-        self._recognizing_overlay: CaptureOverlay | None = None
+        self._ocr_request: tuple[CaptureOverlay, _OcrKey] | None = None
+        self._ocr_cache: dict[_OcrKey, tuple[OcrLine, ...]] = {}
         self._save_pool = QThreadPool(self)
         self._save_finished.connect(self._on_save_finished, Qt.ConnectionType.QueuedConnection)
         self._scan_finished.connect(self._on_scan_finished, Qt.ConnectionType.QueuedConnection)
@@ -129,6 +134,7 @@ class AppController(QObject):
         self._tray.hide()
         self._workbench.close()
         self._hotkey.close()
+        self._selector.close()
         self._save_pool.waitForDone()
 
     @Slot()
@@ -174,7 +180,7 @@ class AppController(QObject):
             self._tray.notify(str(error))
             return
 
-        self._overlay = CaptureOverlay(CaptureSession(frame, self._capture_source))
+        self._overlay = CaptureOverlay(CaptureSession(frame, self._capture_source), self._selector)
         self._overlay.cancelled.connect(self._finish_capture)
         self._overlay.copy_requested.connect(self._copy_snapshot)
         self._overlay.save_requested.connect(self._save_snapshot)
@@ -235,10 +241,15 @@ class AppController(QObject):
             self._start_live_capture(name, snapshot, overlay, screen)
 
     def _start_ocr(self, snapshot: OutputSnapshot, overlay: CaptureOverlay) -> None:
-        if self._recognizing_overlay is not None:
+        key = (snapshot.selection, sha256(snapshot.rgba_pixels).digest())
+        cached = self._ocr_cache.get(key)
+        if cached is not None:
+            self._show_ocr_results(overlay, snapshot, cached)
+            return
+        if self._ocr_request is not None:
             overlay.set_output_feedback("上一项文字识别仍在运行，请稍后重试。")
             return
-        self._recognizing_overlay = overlay
+        self._ocr_request = overlay, key
         overlay.set_output_feedback("正在本地识别文字…", is_pending=True)
         self._save_pool.start(lambda: self._recognize_snapshot(snapshot))
 
@@ -248,16 +259,29 @@ class AppController(QObject):
         except OcrError as error:
             self._ocr_finished.emit(snapshot, (), str(error))
         else:
-            self._ocr_finished.emit(snapshot, lines, "" if lines else "选区内未识别到文字。")
+            self._ocr_finished.emit(snapshot, lines, "")
 
     @Slot(object, object, str)
     def _on_ocr_finished(
         self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], message: str
     ) -> None:
-        overlay, self._recognizing_overlay = self._recognizing_overlay, None
-        if overlay is None or self._overlay is not overlay:
+        request, self._ocr_request = self._ocr_request, None
+        if request is None:
             return
-        overlay.set_output_feedback(message)
+        overlay, key = request
+        if self._overlay is not overlay:
+            return
+        if message:
+            overlay.set_output_feedback(message)
+            return
+        self._ocr_cache[key] = lines
+        self._show_ocr_results(overlay, snapshot, lines)
+
+    @staticmethod
+    def _show_ocr_results(
+        overlay: CaptureOverlay, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...]
+    ) -> None:
+        overlay.set_output_feedback("" if lines else "选区内未识别到文字。")
         if lines:
             dialog = RecognitionResults(lines, partial(overlay.cover_text, snapshot, lines), overlay)
             dialog.finished.connect(overlay.reactivate)
@@ -514,11 +538,13 @@ class AppController(QObject):
     def _finish_capture(self) -> None:
         self._capture_timer.stop()
         self._capture_screen = None
+        self._ocr_cache.clear()
         if self._live_panel is not None:
             panel, self._live_panel = self._live_panel, None
             if panel.isVisible():
                 panel.reject()
         if self._overlay is not None:
+            self._overlay.release_smart_selection()
             self._overlay.hide()
             self._overlay.deleteLater()
             self._overlay = None

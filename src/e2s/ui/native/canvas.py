@@ -770,6 +770,7 @@ class AnnotationCanvas(QWidget):
             action()
             self._selection = None
             self._multi_selection.clear()
+            self.set_feedback("")
             self.setFocus()
             self._refresh()
         else:

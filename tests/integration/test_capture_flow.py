@@ -9,8 +9,8 @@ from uuid import uuid4
 import pytest
 import zxingcpp
 from PIL import Image, ImageDraw, ImageFont
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QImage, QMouseEvent, QWheelEvent
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QCursor, QImage, QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,17 +21,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from e2s.annotation.elements import Tool
+from e2s.annotation.elements import Stroke, Tool
 from e2s.app import capture_output
 from e2s.app import controller as controller_module
 from e2s.app.controller import AppController
 from e2s.capture import translation
 from e2s.capture.geometry import SelectionDrag, SelectionRect
+from e2s.capture.ocr import OcrLine
 from e2s.capture.service import CaptureFrame
+from e2s.capture.session import OutputSnapshot
 from e2s.platform.windows import credentials
 from e2s.platform.windows.clipboard import ClipboardError
+from e2s.platform.windows.uia_selection import HitPhase, SelectorHit
 from e2s.storage.history import HistoryService, HistoryStore
-from e2s.ui.native import overlay as overlay_module
 from e2s.ui.native import qr_results
 from e2s.ui.native.deepseek_settings import DeepSeekSettingsDialog
 from e2s.ui.native.recognition_results import RecognitionResults
@@ -131,33 +133,114 @@ def test_smart_selection_uses_native_child_in_topmost_window(desktop) -> None:
     )
     behind = QWidget(None, flags)
     foreground = QWidget(None, flags)
-    child = QWidget(foreground)
+    child = QPushButton("Native option", foreground)
     behind.setGeometry(QRect(origin, QSize(320, 260)))
     foreground.setGeometry(QRect(origin, QSize(250, 200)))
     child.setGeometry(30, 40, 100, 80)
     child.winId()
+    original_cursor = QCursor.pos()
     try:
         behind.show()
         foreground.show()
         foreground.raise_()
+        position = child.mapToGlobal(child.rect().center())
+        QCursor.setPos(position)
         tray.capture_requested.emit()
         overlay = wait_for_overlay(controller)
-        position = overlay.mapFromGlobal(child.mapToGlobal(child.rect().center()))
-        window_selection = overlay._window_selection
-        window_ids = {int(behind.winId()), int(foreground.winId())}
-        # Restrict the real Z-order snapshot to the native windows installed by this test.
-        window_selection._windows = [
-            entry for entry in window_selection._windows if entry[0] in window_ids
-        ]
-        overlay._update_hover(QPointF(position))
-        child_bounds, window_bounds = overlay._hover_path
+        QCursor.setPos(position + QPoint(1, 0))
+        smart = overlay._smart_selection
 
-        assert overlay._displayed_selection() == child_bounds
-        assert overlay._selection_on_screen(child_bounds).width() == pytest.approx(100, abs=2)
-        assert overlay._selection_on_screen(window_bounds).width() == pytest.approx(250, abs=2)
+        def preview_matches_child() -> bool:
+            return (
+                len(smart._path) >= 2
+                and overlay._selection_on_screen(smart._path[0]).width() == pytest.approx(100, abs=2)
+                and overlay._selection_on_screen(smart._path[-1]).width() == pytest.approx(250, abs=2)
+            )
+
+        wait_for(preview_matches_child, "accessibility child and foreground window path")
+        assert overlay._displayed_selection() == smart._path[0]
     finally:
         foreground.close()
         behind.close()
+        QCursor.setPos(original_cursor)
+
+
+def test_smart_selection_follows_accessible_controls_without_native_handles(desktop) -> None:
+    controller, _, tray, screen = desktop
+    origin = screen.geometry().topLeft() + QPoint(180, 180)
+    flags = (
+        Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+    )
+    window = QWidget(None, flags)
+    window.setGeometry(QRect(origin, QSize(315, 165)))
+    left = QPushButton("Left option", window)
+    left.setGeometry(24, 28, 110, 42)
+    right = QPushButton("Right option", window)
+    right.setGeometry(156, 72, 134, 50)
+    assert not left.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+    assert not right.testAttribute(Qt.WidgetAttribute.WA_NativeWindow)
+    original_cursor = QCursor.pos()
+    try:
+        window.show()
+        window.raise_()
+        QCursor.setPos(left.mapToGlobal(left.rect().center()))
+        tray.capture_requested.emit()
+        overlay = wait_for_overlay(controller)
+        # Move the actual desktop pointer while the capture overlay is foreground.
+        QCursor.setPos(left.mapToGlobal(left.rect().center() + QPoint(1, 0)))
+
+        def preview_matches(button: QPushButton) -> bool:
+            rect = overlay._displayed_selection()
+            if rect is None or overlay._session.selection is not None:
+                return False
+            expected = overlay.mapFromGlobal(button.mapToGlobal(QPoint()))
+            local = overlay._selection_on_screen(rect).toAlignedRect()
+            return (
+                (local.topLeft() - expected).manhattanLength() <= 4
+                and abs(local.width() - button.width()) <= 2
+                and abs(local.height() - button.height()) <= 2
+            )
+
+        wait_for(lambda: preview_matches(left), "left accessibility preview")
+        QCursor.setPos(right.mapToGlobal(right.rect().center()))
+        wait_for(lambda: preview_matches(right), "right accessibility preview")
+        selected = overlay._displayed_selection()
+        QTest.mouseClick(
+            overlay, Qt.MouseButton.LeftButton,
+            pos=overlay.mapFromGlobal(right.mapToGlobal(right.rect().center())),
+        )
+        assert overlay._session.selection == selected
+        assert overlay._canvas._toolbar.isVisible()
+    finally:
+        window.close()
+        QCursor.setPos(original_cursor)
+
+
+def stub_selector(controller, monkeypatch, path_at) -> None:
+    selector = controller._selector
+    monitor = None
+    monkeypatch.setattr(type(selector), "available", property(lambda _: True))
+
+    def refresh(_window_id, physical_monitor):
+        nonlocal monitor
+        monitor = physical_monitor
+        QTimer.singleShot(0, lambda: selector.refreshed.emit(1, True))
+        return 1
+
+    def query(epoch, number, x, y, *, window_only):
+        left, top = monitor.left, monitor.top
+        path = path_at(x - left, y - top)
+        if window_only:
+            path = path[-1:]
+        physical = tuple(
+            SelectionRect(rect.left + left, rect.top + top, rect.right + left, rect.bottom + top)
+            for rect in path
+        )
+        result = SelectorHit(epoch, number, HitPhase.INITIAL, 0, True, physical)
+        QTimer.singleShot(0, lambda: selector.hit_received.emit(result))
+
+    monkeypatch.setattr(selector, "refresh", refresh)
+    monkeypatch.setattr(selector, "query", query)
 
 
 def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
@@ -168,14 +251,9 @@ def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
     parent = SelectionRect(5, 5, 100, 115)
     other = SelectionRect(110, 10, 180, 90)
 
-    class WindowSelectionStub:
-        def __init__(self, _overlay_id: int) -> None:
-            pass
-
-        def hit_path(self, x_px: int, _y_px: int) -> tuple[SelectionRect, ...]:
-            return (child, parent) if x_px < parent.right else (other,)
-
-    monkeypatch.setattr(overlay_module, "WindowSelection", WindowSelectionStub)
+    stub_selector(
+        controller, monkeypatch, lambda x, _y: (child, parent) if x < parent.right else (other,)
+    )
     tray.capture_requested.emit()
     overlay = wait_for_overlay(controller)
     scale_x = overlay._frame.width_px / screen.geometry().width()
@@ -183,9 +261,15 @@ def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
     first_point = QPoint(round(45 / scale_x), round(45 / scale_y))
     second_point = QPoint(round(145 / scale_x), round(45 / scale_y))
     move_pointer(overlay, first_point)
-    assert overlay._displayed_selection() == child
+    wait_for(lambda: overlay._displayed_selection() == child, "initial child preview")
     assert overlay._session.selection is None
     assert overlay._canvas is None
+
+    animation = overlay._smart_preview_animation
+    animation.setCurrentTime(animation.duration())
+    child_rect = overlay._selection_on_screen(child)
+    parent_rect = overlay._selection_on_screen(parent)
+    assert overlay._painted_selection() == (child, child_rect)
 
     wheel = QWheelEvent(
         QPointF(first_point), QPointF(overlay.mapToGlobal(first_point)),
@@ -194,11 +278,32 @@ def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
     )
     QApplication.sendEvent(overlay, wheel)
     assert overlay._displayed_selection() == parent
+    animation.pause()
+    animation.setCurrentTime(animation.duration() // 2)
+    preview, intermediate = overlay._painted_selection()
+    assert preview == parent
+    assert parent_rect.left() < intermediate.left() < child_rect.left()
+    assert child_rect.width() < intermediate.width() < parent_rect.width()
+
+    QTest.keyClick(overlay, Qt.Key.Key_Tab)
+    assert overlay._smart_selection.window_only
+    assert overlay._displayed_selection() == parent
+    QTest.keyClick(overlay, Qt.Key.Key_Tab)
+    wait_for(lambda: overlay._displayed_selection() == child, "child preview after Tab")
+    assert animation.startValue() == intermediate
+    animation.setCurrentTime(animation.duration())
 
     move_pointer(overlay, second_point)
-    assert overlay._displayed_selection() == other
+    assert overlay._displayed_selection() is None
+    assert overlay._painted_selection() == (child, child_rect)
+    wait_for(lambda: overlay._displayed_selection() == other, "next window preview")
+    assert animation.startValue() == child_rect
     assert overlay._session.selection is None
-    QTest.mouseClick(overlay, Qt.MouseButton.LeftButton, pos=second_point)
+
+    animation.setCurrentTime(animation.duration() // 2)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=second_point)
+    assert overlay._painted_selection() == (other, overlay._selection_on_screen(other))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=second_point)
     assert overlay._session.selection == other
     assert overlay._canvas._toolbar.isVisible()
 
@@ -209,14 +314,7 @@ def test_smart_selection_follows_pointer_and_commits_the_hovered_area(
 def test_drag_from_smart_preview_creates_manual_selection(desktop, monkeypatch) -> None:
     controller, _, tray, _ = desktop
 
-    class WindowSelectionStub:
-        def __init__(self, _overlay_id: int) -> None:
-            pass
-
-        def hit_path(self, _x_px: int, _y_px: int) -> tuple[SelectionRect, ...]:
-            return (SelectionRect(0, 0, 500, 400),)
-
-    monkeypatch.setattr(overlay_module, "WindowSelection", WindowSelectionStub)
+    stub_selector(controller, monkeypatch, lambda _x, _y: (SelectionRect(0, 0, 500, 400),))
     tray.capture_requested.emit()
     overlay = wait_for_overlay(controller)
     start, finish = QPoint(20, 30), QPoint(140, 150)
@@ -224,12 +322,15 @@ def test_drag_from_smart_preview_creates_manual_selection(desktop, monkeypatch) 
         overlay._source_position(QPointF(finish)), overlay._frame.width_px, overlay._frame.height_px
     )
 
+    move_pointer(overlay, start)
+    wait_for(lambda: overlay._displayed_selection() is not None, "smart selection preview")
     QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=start)
     assert overlay._displayed_selection() == SelectionRect(0, 0, 500, 400)
     move_pointer(overlay, start + QPoint(1, 1), Qt.MouseButton.LeftButton)
     assert overlay._displayed_selection() == SelectionRect(0, 0, 500, 400)
     move_pointer(overlay, finish, Qt.MouseButton.LeftButton)
     assert overlay._displayed_selection() == expected
+    assert overlay._painted_selection() == (expected, overlay._selection_on_screen(expected))
     assert overlay._session.selection is None
     QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=finish)
     assert overlay._session.selection == expected
@@ -740,6 +841,14 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
     )
 
     requests = []
+    recognition_calls = []
+    recognize_snapshot = controller._recognizer.recognize
+
+    def count_recognition(snapshot: OutputSnapshot) -> tuple[OcrLine, ...]:
+        recognition_calls.append(snapshot.selection)
+        return recognize_snapshot(snapshot)
+
+    monkeypatch.setattr(controller._recognizer, "recognize", count_recognition)
 
     class DeepSeekHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
@@ -778,8 +887,7 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
 
         def recognize() -> RecognitionResults:
             QTest.keyClick(overlay._canvas, Qt.Key.Key_O, control)
-            assert controller._recognizing_overlay is overlay
-            wait_for(lambda: controller._recognizing_overlay is None, "OCR completion")
+            wait_for(lambda: controller._ocr_request is None, "OCR completion")
             dialog = overlay.findChild(RecognitionResults)
             assert dialog is not None, overlay._canvas._feedback.text()
             assert dialog.isVisible()
@@ -791,14 +899,17 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
         assert not result._result_cover.isEnabled()
         result._source_cover.click()
         assert not result.isVisible(), result._status.text()
-        assert overlay._session.create_snapshot().rgba_pixels != original.rgba_pixels
+        original_cover = overlay._session.create_snapshot()
+        assert original_cover.rgba_pixels != original.rgba_pixels
         assert "已覆盖" in overlay._canvas._feedback.text()
-        QTest.keyClick(overlay._canvas, Qt.Key.Key_Z, control)
-        assert overlay._session.create_snapshot().rgba_pixels == original.rgba_pixels
+        undo = overlay._canvas._toolbar._action_buttons["undo"]
+        assert undo.isEnabled()
         wait_for(lambda: overlay.findChild(RecognitionResults) is None, "OCR dialog close")
         assert not requests
 
         result = recognize()
+        assert result._source.toPlainText() == "截图文字识别\nEasy to Shot"
+        assert recognition_calls == [selection]
         result._translate.click()
         settings = result.findChild(DeepSeekSettingsDialog)
         assert settings.isVisible()
@@ -839,9 +950,19 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
         assert controller._overlay is overlay
         assert overlay._session.selection == selection
         translated = overlay._session.create_snapshot()
-        assert translated.rgba_pixels != original.rgba_pixels
+        assert translated.rgba_pixels != original_cover.rgba_pixels
+        assert undo.isEnabled()
+        undo.click()
+        assert overlay._session.create_snapshot().rgba_pixels == original_cover.rgba_pixels
+        assert not overlay._canvas._feedback.text()
         QTest.keyClick(overlay._canvas, Qt.Key.Key_Z, control)
         assert overlay._session.create_snapshot().rgba_pixels == original.rgba_pixels
+        wait_for(lambda: overlay.findChild(RecognitionResults) is None, "OCR dialog close")
+        result = recognize()
+        assert recognition_calls == [selection]
+        result.reject()
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_Y, control)
+        assert overlay._session.create_snapshot().rgba_pixels == original_cover.rgba_pixels
         QTest.keyClick(overlay._canvas, Qt.Key.Key_Y, control)
         assert overlay._session.create_snapshot().rgba_pixels == translated.rgba_pixels
 
@@ -855,6 +976,66 @@ def test_screen_ocr_and_deepseek_translation(desktop, monkeypatch: pytest.Monkey
         server.shutdown()
         server.server_close()
         thread.join(timeout=1)
+
+
+def test_ocr_reuses_selection_content_only_within_the_same_capture(
+    desktop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, workbench, _, screen = desktop
+    geometry = screen.geometry()
+    image = QImage(geometry.size(), QImage.Format.Format_RGBA8888)
+    image.fill(Qt.GlobalColor.white)
+    monkeypatch.setattr(
+        controller_module, "capture_frame", lambda _: CaptureFrame("ocr", geometry, image)
+    )
+    first_area = SelectionRect(10, 10, 270, 170)
+    blank_area = SelectionRect(260, 170, 400, 255)
+    calls = []
+    lines = (OcrLine("Sample", ((8, 8), (72, 8), (72, 26), (8, 26))),)
+
+    def recognize(snapshot: OutputSnapshot) -> tuple[OcrLine, ...]:
+        calls.append(snapshot.selection)
+        return () if snapshot.selection == blank_area else lines
+
+    monkeypatch.setattr(controller._recognizer, "recognize", recognize)
+
+    def request_ocr(overlay, expected: str) -> None:
+        QTest.keyClick(overlay._canvas, Qt.Key.Key_O, Qt.KeyboardModifier.ControlModifier)
+        wait_for(lambda: controller._ocr_request is None, "OCR completion")
+        dialog = overlay.findChild(RecognitionResults)
+        if expected:
+            assert dialog is not None
+            assert dialog._source.toPlainText() == expected
+            dialog.reject()
+            wait_for(lambda: overlay.findChild(RecognitionResults) is None, "OCR dialog close")
+        else:
+            assert dialog is None
+            assert "未识别到文字" in overlay._canvas._feedback.text()
+
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    overlay._set_selection(first_area)
+    request_ocr(overlay, "Sample")
+    overlay._set_selection(blank_area)
+    request_ocr(overlay, "")
+    request_ocr(overlay, "")
+    overlay._set_selection(first_area)
+    request_ocr(overlay, "Sample")
+    assert calls == [first_area, blank_area]
+
+    document = overlay._session.begin_annotation()
+    document.add(Stroke(Tool.RECTANGLE, ((35, 35), (60, 60)), "#1677ff", 2, True))
+    request_ocr(overlay, "Sample")
+    QTest.keyClick(overlay._canvas, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    request_ocr(overlay, "Sample")
+    assert calls == [first_area, blank_area, first_area]
+
+    overlay.close()
+    workbench.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    overlay._set_selection(first_area)
+    request_ocr(overlay, "Sample")
+    assert calls == [first_area, blank_area, first_area, first_area]
 
 
 def wait_for(check, description: str) -> None:
