@@ -356,7 +356,8 @@ class AppController(QObject):
             default_name = directory / build_filename(datetime.now())
             try:
                 panel = RegionRecording(
-                    grab, default_name, QSize(selection.width_px, selection.height_px)
+                    grab, default_name, QSize(selection.width_px, selection.height_px),
+                    capture_overlay=overlay,
                 )
             except OSError:
                 overlay.set_output_feedback("无法创建录屏临时文件。")
@@ -371,7 +372,6 @@ class AppController(QObject):
             toolbar = overlay._canvas._toolbar
             anchor = QRect(toolbar.mapToGlobal(QPoint(0, 0)), toolbar.size())
             panel.recording_started.connect(overlay.hide)
-            overlay.setEnabled(False)
             presented = panel.present(screen, region, anchor)
         else:
             presented = panel.present(screen, region)
@@ -412,10 +412,9 @@ class AppController(QObject):
         if self._live_panel is panel:
             self._live_panel = None
             if self._overlay is not None and self._capture_screen is not None:
-                self._overlay.setEnabled(True)
                 if panel.result() == panel.DialogCode.Accepted:
                     self._finish_capture()
-                else:
+                elif not self._overlay.isVisible():
                     self._overlay.show_on_screen(self._capture_screen)
         panel.deleteLater()
 

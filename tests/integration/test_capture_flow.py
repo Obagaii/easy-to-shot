@@ -353,7 +353,7 @@ def test_recording_opens_for_current_capture_selection(desktop, monkeypatch, tmp
     assert panel._region == overlay.selection_geometry(selection)
     assert panel._directory == tmp_path / "EasyToShot"
     assert overlay.isVisible()
-    assert not overlay.isEnabled()
+    assert overlay.isEnabled()
     assert panel.windowFlags() & Qt.WindowType.FramelessWindowHint
     assert panel._drag_handle.isVisible()
     panel.reject()
@@ -369,6 +369,36 @@ def test_recording_opens_for_current_capture_selection(desktop, monkeypatch, tmp
     assert overlay.isVisible()
     assert overlay.isEnabled()
 
+
+
+def test_recording_toolbar_dismisses_on_capture_click_and_escape_still_works(
+    desktop, monkeypatch, tmp_path
+) -> None:
+    controller, _, tray, _ = desktop
+    monkeypatch.setattr(
+        controller_module.QStandardPaths, "writableLocation", lambda _location: str(tmp_path)
+    )
+    tray.capture_requested.emit()
+    overlay = wait_for_overlay(controller)
+    QTest.mousePress(overlay, Qt.MouseButton.LeftButton, pos=QPoint(80, 70))
+    QTest.mouseRelease(overlay, Qt.MouseButton.LeftButton, pos=QPoint(340, 250))
+    toolbar = overlay._canvas._toolbar
+    QTest.mouseClick(toolbar._action_buttons["record"], Qt.MouseButton.LeftButton)
+    assert controller._live_panel is not None
+    assert overlay.isEnabled()
+
+    QTest.mouseClick(toolbar._buttons[Tool.RECTANGLE], Qt.MouseButton.LeftButton)
+    assert controller._live_panel is None
+    assert overlay._canvas._tool is Tool.RECTANGLE
+    assert overlay.isEnabled()
+
+    QTest.mouseClick(toolbar._action_buttons["record"], Qt.MouseButton.LeftButton)
+    assert controller._live_panel is not None
+    QTest.mouseClick(overlay._canvas, Qt.MouseButton.LeftButton, pos=QPoint(160, 140))
+    assert controller._live_panel is None
+    assert overlay.isEnabled()
+    QTest.keyClick(overlay._canvas, Qt.Key.Key_Escape)
+    assert controller._overlay is None
 
 def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch) -> None:
     controller, workbench, _, _ = desktop

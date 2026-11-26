@@ -75,7 +75,10 @@ class RegionRecording(QDialog):
     failed = Signal(str)
     completed = Signal(object)
 
-    def __init__(self, grab: Callable[[], QImage], destination: Path, size: QSize) -> None:
+    def __init__(
+        self, grab: Callable[[], QImage], destination: Path, size: QSize,
+        *, capture_overlay: QWidget | None = None,
+    ) -> None:
         super().__init__(
             None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint,
@@ -84,6 +87,7 @@ class RegionRecording(QDialog):
         self._drag_anchor: QPoint | None = None
         self._excluded_from_capture = False
         self.setWindowTitle("区域录像")
+        self._capture_overlay = capture_overlay
         self._grab = grab
         self._size = QSize(size)
         self._destination = destination
@@ -168,6 +172,15 @@ class RegionRecording(QDialog):
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            self._stage is Stage.READY
+            and self._capture_overlay is not None
+            and isinstance(watched, QWidget)
+            and watched.window() is self._capture_overlay
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
+            self.reject()
+            return False
         if watched is self._drag_handle and isinstance(event, QMouseEvent):
             if (event.type() == QEvent.Type.MouseButtonPress
                     and event.button() == Qt.MouseButton.LeftButton):
