@@ -162,7 +162,7 @@ def test_toolbar_exposes_only_requested_tools_and_shortcuts(canvas) -> None:
         Tool.TEXT, Tool.WATERMARK, Tool.RECT_HIGHLIGHT, Tool.ERASER,
     )
     assert tuple(toolbar._action_buttons) == (
-        "undo", "redo", "barcode", "record", "pin", "scroll", "save", "cancel", "copy"
+        "undo", "redo", "ocr", "barcode", "record", "pin", "scroll", "save", "cancel", "copy"
     )
     for button in (*toolbar._buttons.values(), *toolbar._action_buttons.values()):
         assert button.accessibleName() in button.property("alt")
@@ -181,9 +181,10 @@ def test_toolbar_exposes_only_requested_tools_and_shortcuts(canvas) -> None:
     control = Qt.KeyboardModifier.ControlModifier
     QTest.keyClick(widget, Qt.Key.Key_F, control)
     QTest.keyClick(widget, Qt.Key.Key_Q, control)
+    QTest.keyClick(widget, Qt.Key.Key_O, control)
     QTest.keyClick(widget, Qt.Key.Key_R, control)
     QTest.keyClick(widget, Qt.Key.Key_L)
-    assert requested == ["pin", "barcode", "record", "scroll"]
+    assert requested == ["pin", "barcode", "ocr", "record", "scroll"]
 
 
 def test_settings_follow_tool_and_element_eraser_undo_restores_selection(canvas) -> None:

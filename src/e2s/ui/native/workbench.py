@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, HotkeyError, HotkeyState
+from e2s.ui.native.deepseek_settings import DeepSeekSettingsDialog
 
 _HOTKEY_MESSAGES = {
     HotkeyError.INVALID: "请输入包含 Ctrl、Shift 或 Alt 的单个组合键。",
@@ -54,8 +55,14 @@ class Workbench(QMainWindow):
         self._layout.addWidget(capture_button)
         self._layout.addSpacing(12)
         self._layout.addLayout(hotkey_form)
+        translation_settings = QPushButton("AI 翻译设置")
+        translation_settings.clicked.connect(self._show_translation_settings)
+        self._layout.addWidget(translation_settings)
         self._layout.addStretch()
         self.setCentralWidget(content)
+
+    def _show_translation_settings(self) -> None:
+        DeepSeekSettingsDialog(self).open()
 
     def activate(self) -> None:
         if self.isMinimized():

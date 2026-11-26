@@ -18,7 +18,9 @@ from PySide6.QtGui import (
 
 from e2s.annotation.elements import (
     MASK_TOOLS,
+    Annotation,
     Element,
+    ImagePatch,
     Point,
     Stroke,
     Text,
@@ -31,7 +33,7 @@ _LINE_STYLES = {"solid": Qt.PenStyle.SolidLine, "dash": Qt.PenStyle.DashLine,
 
 
 def render_annotations(
-    source: QImage, elements: Iterable[Element], origin_px: tuple[int, int] = (0, 0)
+    source: QImage, elements: Iterable[Annotation], origin_px: tuple[int, int] = (0, 0)
 ) -> QImage:
     """Paint frame-relative annotations on a crop at its original pixel density."""
     image = source.convertToFormat(QImage.Format.Format_RGBA8888)
@@ -52,6 +54,8 @@ def render_annotations(
                 painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
                 painter.drawImage(bounds.topLeft(), source)
                 painter.restore()
+            elif isinstance(element, ImagePatch):
+                painter.drawImage(QPointF(*element.origin), element.image)
             elif element.tool is Tool.WATERMARK:
                 watermark = element
             elif element.opacity:
@@ -87,7 +91,7 @@ def _draw_element(painter: QPainter, element: Element, crop: QRectF) -> None:
     painter.restore()
 
 
-def hit_test(elements: tuple[Element, ...], point: Point, tolerance_px: float) -> int | None:
+def hit_test(elements: tuple[Annotation, ...], point: Point, tolerance_px: float) -> int | None:
     position = QPointF(*point)
     for index in range(len(elements) - 1, -1, -1):
         element = elements[index]
@@ -95,7 +99,7 @@ def hit_test(elements: tuple[Element, ...], point: Point, tolerance_px: float) -
             is_mask = element.tool in MASK_TOOLS
             if stroke_area(element, 0 if is_mask else tolerance_px).contains(position):
                 return None if is_mask else index
-        elif element.tool is Tool.TEXT:
+        elif isinstance(element, Text) and element.tool is Tool.TEXT:
             bounds = element_bounds(element)
             if bounds.adjusted(-tolerance_px, -tolerance_px, tolerance_px, tolerance_px).contains(
                 position
@@ -104,14 +108,17 @@ def hit_test(elements: tuple[Element, ...], point: Point, tolerance_px: float) -
     return None
 
 
-def intersecting_elements(elements: tuple[Element, ...], area: QPainterPath) -> set[int]:
+def intersecting_elements(elements: tuple[Annotation, ...], area: QPainterPath) -> set[int]:
     """Find editable elements intersecting a selection or an element eraser."""
     found = set()
     for index, element in enumerate(elements):
         if isinstance(element, Stroke):
             if element.tool not in MASK_TOOLS and area.intersects(stroke_area(element)):
                 found.add(index)
-        elif element.tool is Tool.TEXT and area.intersects(element_bounds(element)):
+        elif (
+            isinstance(element, Text) and element.tool is Tool.TEXT
+            and area.intersects(element_bounds(element))
+        ):
             found.add(index)
     return found
 

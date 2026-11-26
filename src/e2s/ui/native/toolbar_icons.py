@@ -30,6 +30,7 @@ _PATHS = {
     "pin": "m15 3 6 6-4 4q1 4-2 7L4 9q3-3 7-2zm-5 12-7 7",
     "accept": "m4 12 5 5L20 6",
     "cancel": "M5 5l14 14M19 5 5 19",
+    "ocr": "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5M7 8h10M7 12h10m-10 4h7",
     "barcode_marker": "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5m4-9h3v3H7zm7 0h3v3h-3zm-7 7h3v3H7zm7 0h3v3h-3z",
     "barcode": "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5m4-9h3v3H7zm7 0h3v3h-3z"
                "m-7 7h3v3H7zm7 0h2v2h-2zm4 2v2m-4 0h2",
@@ -38,8 +39,7 @@ _PATHS = {
     "record_stop": "M12 3a9 9 0 1 0 0 18 9 9 0 1 0 0-18m-3 6h6v6H9z",
     "record_pause": "M9 5H6v14h3zM18 5h-3v14h3z",
     "record_folder": "M3 6h7l2 3h9v10H3z",
-    "record_trim": "M3 4h6v16H3m18-16h-6v16h6M9 12h6m-4-2-2 2 2 2m2-4 2 2-2 2",
-    "record_settings": "M3 6h18M3 12h18M3 18h18M8 4v4m8 2v4m-5 2v4",
+    "speaker": "M3 9h4l5-4v14l-5-4H3zM15 9a4 4 0 0 1 0 6m2-8a7 7 0 0 1 0 10",
     "microphone": "M12 3a3 3 0 0 0-3 3v5a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3"
                   "M6 11a6 6 0 1 0 12 0M12 17v4m-3 0h6M3 3l18 18",
     "microphone_on": "M12 3a3 3 0 0 0-3 3v5a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3"

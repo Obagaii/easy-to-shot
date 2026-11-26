@@ -1,9 +1,21 @@
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    Qt,
+    QVariantAnimation,
+    Signal,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
+    QCursor,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -11,8 +23,9 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPen,
     QScreen,
+    QWheelEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from e2s.capture.geometry import (
     ResizeHandle,
@@ -21,9 +34,13 @@ from e2s.capture.geometry import (
     SelectionRect,
     move_selection,
 )
+from e2s.capture.ocr import OcrLine
+from e2s.capture.ocr_overlay import render_text_cover
 from e2s.capture.qr import CodeDetection
 from e2s.capture.service import CaptureError
 from e2s.capture.session import CaptureSession, OutputSnapshot
+from e2s.platform.windows.uia_selection import WindowsSelector
+from e2s.platform.windows.window_capture import monitor_pixel_bounds
 from e2s.ui.native.canvas import AnnotationCanvas
 from e2s.ui.native.qr_results import QrResults
 from e2s.ui.native.resize_handles import (
@@ -31,6 +48,7 @@ from e2s.ui.native.resize_handles import (
     handle_positions,
     resize_cursor,
 )
+from e2s.ui.native.smart_selection import SmartSelection
 
 _ARROW_STEPS = {
     Qt.Key.Key_Left: (-1, 0),
@@ -44,6 +62,7 @@ _ARROW_STEPS = {
 }
 _HANDLE_HIT_DIP = 12
 _BORDER_HIT_DIP = 4
+_SMART_PREVIEW_DURATION_MS = 120
 
 
 class CaptureOverlay(QWidget):
@@ -53,7 +72,7 @@ class CaptureOverlay(QWidget):
     pin_requested = Signal(object)
     action_requested = Signal(str, object)
 
-    def __init__(self, session: CaptureSession) -> None:
+    def __init__(self, session: CaptureSession, selector: WindowsSelector) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
@@ -61,6 +80,7 @@ class CaptureOverlay(QWidget):
             | Qt.WindowType.WindowStaysOnTopHint,
         )
         self._session = session
+        self._selector = selector
         self._qr_results = QrResults(self)
         self._frame = session.frame
         rect = self._frame.geometry_dip
@@ -70,6 +90,13 @@ class CaptureOverlay(QWidget):
         )
         self._drag: SelectionDrag | None = None
         self._preview_selection: SelectionRect | None = None
+        self._smart_selection: SmartSelection | None = None
+        self._smart_preview: SelectionRect | None = None
+        self._smart_preview_animation = QVariantAnimation(
+            self, duration=_SMART_PREVIEW_DURATION_MS, easingCurve=QEasingCurve.Type.OutQuad,
+        )
+        self._smart_preview_animation.valueChanged.connect(lambda _: self.update())
+        self._press_position: QPointF | None = None
         self._canvas: AnnotationCanvas | None = None
         self._feedback = ""
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -82,7 +109,56 @@ class CaptureOverlay(QWidget):
         self.windowHandle().setScreen(screen)
         self.setGeometry(self._frame.geometry_dip)
         self.showFullScreen()
+        if self._canvas is None and QApplication.platformName() == "windows":
+            self._start_smart_selection()
         self.reactivate()
+
+    def _start_smart_selection(self) -> None:
+        window_id = int(self.winId())
+        monitor = monitor_pixel_bounds(window_id)
+        if monitor is None or not self._selector.available:
+            self._on_selector_failed()
+            return
+        self._smart_selection = SmartSelection(
+            self._selector, window_id, monitor, self,
+        )
+        self._smart_selection.changed.connect(self._update_smart_preview)
+        self._smart_selection.failed.connect(self._on_selector_failed)
+        self._update_hover(QPointF(self.mapFromGlobal(QCursor.pos())))
+
+    def release_smart_selection(self) -> None:
+        smart, self._smart_selection = self._smart_selection, None
+        if smart is not None:
+            smart.stop()
+            smart.deleteLater()
+            self._clear_smart_preview()
+
+    def _update_smart_preview(self) -> None:
+        selection = self._smart_selection.selection
+        # Keep the last frame visible while the selector looks up the next target.
+        if selection is not None and selection != self._smart_preview:
+            animation = self._smart_preview_animation
+            target = self._selection_on_screen(selection)
+            start = animation.currentValue() if self._smart_preview is not None else target
+            self._smart_preview = selection
+            animation.stop()
+            animation.setStartValue(start)
+            animation.setEndValue(target)
+            if start != target:
+                animation.start()
+            else:
+                animation.setCurrentTime(animation.duration())
+        self.update()
+
+    def _clear_smart_preview(self) -> None:
+        self._smart_preview = None
+        self._smart_preview_animation.stop()
+        self.update()
+
+    def _on_selector_failed(self) -> None:
+        self.release_smart_selection()
+        self._feedback = "智能选区不可用 · 拖动框选 · Esc 取消"
+        self.update()
 
     def selection_origin(self, selection: SelectionRect) -> QPoint:
         """Return the global Qt desktop position of the selection's top-left pixel."""
@@ -110,6 +186,15 @@ class CaptureOverlay(QWidget):
             if not is_pending:
                 self._canvas.focus_input()
 
+    def cover_text(
+        self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], text: tuple[str, ...]
+    ) -> None:
+        if self._canvas is None or self._session.selection != snapshot.selection:
+            raise CaptureError("截图选区已变化，请重新识别文字。")
+        patch = render_text_cover(snapshot, lines, text)
+        self._canvas.add_image_patch(patch)
+        self.set_output_feedback("已覆盖到截图，可按 Ctrl+Z 撤销。")
+
     def show_code_results(self, detections: tuple[CodeDetection, ...]) -> None:
         selection = self._session.selection
         if selection is not None:
@@ -120,30 +205,68 @@ class CaptureOverlay(QWidget):
         viewport = QRectF(self.rect())
         painter.drawImage(viewport, self._frame.image)
 
-        selection = self._preview_selection if self._drag is not None else self._session.selection
+        selection, rect = self._painted_selection()
         shade = QPainterPath()
         shade.addRect(viewport)
         if selection is not None:
-            rect = self._selection_on_screen(selection)
             shade.addRect(rect)
+        if self._smart_preview is not None:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillPath(shade, QColor(0, 0, 0, 150))
         if self._canvas is None:
             self._paint_selection_frame(painter)
             if self._drag is None:
                 message = self._feedback or "拖动框选 · Esc 取消"
+                smart = self._smart_selection
+                if not self._feedback and smart is not None and smart.selection is not None:
+                    target = "窗口" if smart.window_only else "控件"
+                    message = f"智能选区（{target}） · 单击确认 · Tab 切换 · " + message
+                    if smart.has_levels:
+                        message += " · 滚轮切换层级"
                 width = painter.fontMetrics().horizontalAdvance(message) + 20
                 self._draw_label(painter, message, (self.width() - width) / 2, 36)
 
+    def _displayed_selection(self) -> SelectionRect | None:
+        if self._drag is not None:
+            return self._preview_selection
+        if self._smart_selection is not None:
+            return self._smart_selection.selection
+        return self._session.selection
+
+    def _painted_selection(self) -> tuple[SelectionRect | None, QRectF]:
+        if self._smart_selection is not None and self._drag is None:
+            if self._smart_preview is not None:
+                return self._smart_preview, self._smart_preview_animation.currentValue()
+            return None, QRectF()
+        selection = self._displayed_selection()
+        return selection, self._selection_on_screen(selection) if selection is not None else QRectF()
+
     def _paint_selection_frame(self, painter: QPainter) -> None:
-        selection = self._preview_selection if self._drag is not None else self._session.selection
+        selection, rect = self._painted_selection()
         if selection is None:
             return
-        rect = self._selection_on_screen(selection)
         active = self._drag.resize_handle if self._drag is not None else None
-        draw_resize_frame(painter, rect, QRectF(self.rect()), active)
+        is_smart_preview = self._smart_selection is not None and self._drag is None
+        draw_resize_frame(
+            painter, rect, QRectF(self.rect()), active, show_handles=not is_smart_preview,
+        )
         dimensions = f"{selection.width_px} × {selection.height_px} px"
-        bottom = rect.top() - 8 if rect.top() >= 40 else rect.bottom() + 32
+        bottom = rect.top() - 8
+        if not is_smart_preview and rect.top() < 40:
+            bottom = rect.bottom() + 32
         self._draw_label(painter, dimensions, rect.left(), bottom)
+
+    def event(self, event: QEvent) -> bool:
+        if (
+            event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_Tab
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and self._drag is None and self._smart_selection is not None
+            and (event.isAutoRepeat() or self._smart_selection.toggle_target())
+        ):
+            event.accept()
+            return True
+        return super().event(event)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if watched is self._canvas and event.type() == QEvent.Type.MouseButtonPress:
@@ -176,7 +299,18 @@ class CaptureOverlay(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            drag = self._selection_drag_at(event.position())
+            position = event.position()
+            self._update_hover(position)
+            smart = self._smart_selection
+            if smart is not None and smart.selection is not None:
+                self._press_position = position
+                smart.pause()
+                animation = self._smart_preview_animation
+                animation.stop()
+                animation.setCurrentTime(animation.duration())
+                event.accept()
+                return
+            drag = self._selection_drag_at(position)
             if drag is not None:
                 self._start_drag(drag, event.position())
                 event.accept()
@@ -184,15 +318,72 @@ class CaptureOverlay(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        position = event.position()
+        self._maybe_start_manual_drag(position)
         if self._drag is not None:
-            self._update_drag(event.position())
+            self._update_drag(position)
         else:
-            self._update_cursor(event.position())
+            self._update_hover(position)
+            self._update_cursor(position)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        if self._press_position is None and self._smart_selection is not None:
+            self._smart_selection.clear()
+            self._clear_smart_preview()
+        super().leaveEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        delta = event.angleDelta().y()
+        smart = self._smart_selection
+        if self._press_position is None and smart is not None and delta:
+            self._update_hover(event.position())
+            if smart.step(1 if delta > 0 else -1):
+                event.accept()
+                return
+        super().wheelEvent(event)
+
+    def _update_hover(self, position: QPointF) -> None:
+        smart = self._smart_selection
+        if smart is None or self._press_position is not None:
+            return
+        if not QRectF(self.rect()).contains(position):
+            smart.clear()
+            self._clear_smart_preview()
+            return
+        x, y = self._coordinates.to_source(
+            self._coordinates.origin_x_dip + position.x(),
+            self._coordinates.origin_y_dip + position.y(),
+        )
+        smart.move((min(int(x), self._frame.width_px - 1), min(int(y), self._frame.height_px - 1)))
+
+    def _maybe_start_manual_drag(self, position: QPointF) -> None:
+        origin = self._press_position
+        if origin is None:
+            return
+        delta = position - origin
+        distance = QApplication.startDragDistance()
+        if delta.x() ** 2 + delta.y() ** 2 >= distance ** 2:
+            self._press_position = None
+            if self._smart_selection is not None:
+                self._smart_selection.clear()
+            self._start_drag(SelectionDrag(self._source_position(origin)), origin)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton or self._drag is None:
+        if event.button() != Qt.MouseButton.LeftButton:
             return
-        self._update_drag(event.position())
+        position = event.position()
+        self._maybe_start_manual_drag(position)
+        if self._press_position is not None:
+            selection = self._displayed_selection()
+            self._press_position = None
+            if selection is not None and self._selection_on_screen(selection).contains(position):
+                self._set_selection(selection)
+            self._resume_smart_selection(position)
+            event.accept()
+            return
+        if self._drag is None:
+            return
+        self._update_drag(position)
         selection = self._preview_selection
         self._preview_selection = None
         self._drag = None
@@ -201,8 +392,14 @@ class CaptureOverlay(QWidget):
         if self._canvas is not None:
             self._canvas.preview_selection(None)
             self._canvas.focus_input()
-        self._update_cursor(event.position())
+        self._resume_smart_selection(position)
+        self._update_cursor(position)
         self.update()
+
+    def _resume_smart_selection(self, position: QPointF) -> None:
+        if self._smart_selection is not None:
+            self._smart_selection.resume()
+            self._update_hover(position)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
@@ -235,6 +432,7 @@ class CaptureOverlay(QWidget):
             self._session.set_selection(selection)
             if self._canvas is None:
                 self._show_annotation_canvas(selection)
+                self.release_smart_selection()
             elif selection != previous:
                 self._canvas.set_selection_target(self._selection_on_screen(selection))
         except (CaptureError, MemoryError) as error:
@@ -258,9 +456,7 @@ class CaptureOverlay(QWidget):
         canvas.copy_requested.connect(lambda: self._request_output(self.copy_requested.emit))
         canvas.save_requested.connect(lambda: self._request_output(self.save_requested.emit))
         canvas.pin_requested.connect(lambda: self._request_output(self.pin_requested.emit))
-        canvas.output_requested.connect(
-            lambda name: self._request_output(lambda image: self.action_requested.emit(name, image))
-        )
+        canvas.output_requested.connect(self._request_capture_action)
         canvas.setGeometry(self.rect())
         canvas.show()
 
@@ -271,11 +467,19 @@ class CaptureOverlay(QWidget):
             max(0, min(self._frame.height_px - 1, int(y))),
         )
 
-    def _request_output(self, requested: Callable[[OutputSnapshot], None]) -> None:
+    def _request_capture_action(self, name: str) -> None:
+        self._request_output(
+            lambda snapshot: self.action_requested.emit(name, snapshot),
+            include_text_covers=name != "ocr",
+        )
+
+    def _request_output(
+        self, requested: Callable[[OutputSnapshot], None], *, include_text_covers: bool = True
+    ) -> None:
         if self._drag is not None:
             return
         try:
-            snapshot = self._session.create_snapshot()
+            snapshot = self._session.create_snapshot(include_text_covers=include_text_covers)
         except (CaptureError, MemoryError) as error:
             self.set_output_feedback(
                 str(error) if isinstance(error, CaptureError) else "内存不足，无法生成截图。"
@@ -314,6 +518,8 @@ class CaptureOverlay(QWidget):
     def _start_drag(self, drag: SelectionDrag, position: QPointF) -> None:
         self._drag = drag
         self._feedback = ""
+        if self._smart_selection is not None:
+            self._clear_smart_preview()
         if self._canvas is not None:
             self._canvas.set_feedback("")
             self._canvas.setCursor(self._drag_cursor(drag))

@@ -24,6 +24,7 @@ from e2s.annotation.document import AnnotationDocument
 from e2s.annotation.elements import (
     SHAPE_TOOLS,
     Element,
+    ImagePatch,
     Point,
     Stroke,
     Text,
@@ -82,6 +83,7 @@ class AnnotationCanvas(QWidget):
         *,
         draw_selection_frame: Callable[[QPainter], None] | None = None,
         sample_screen_color: Callable[[QPointF], QColor] | None = None,
+        recording: bool = False,
     ) -> None:
         super().__init__(parent)
         self._document = document
@@ -92,7 +94,9 @@ class AnnotationCanvas(QWidget):
         self._is_sampling_color = False
         source = document.source
         self._width_px, self._height_px = source.width(), source.height()
-        self._tool = Tool.MOVE
+        self._recording = recording
+        self._controls_visible = True
+        self._tool = Tool.SELECT if recording else Tool.MOVE
         self._selection: int | None = None
         self._multi_selection: set[int] = set()
         self._watermark_preview: Text | None = None
@@ -109,7 +113,7 @@ class AnnotationCanvas(QWidget):
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
-        self._toolbar = AnnotationToolbar(self)
+        self._toolbar = AnnotationToolbar(self, recording=recording)
         self._toolbar.tool_changed.connect(self._set_tool)
         self._toolbar.action_requested.connect(self._dispatch_action)
         self._styles = AnnotationStylePanel(self)
@@ -172,6 +176,32 @@ class AnnotationCanvas(QWidget):
     def focus_input(self) -> None:
         (self._editor or self).setFocus()
 
+    def set_recording_editing(self, editing: bool) -> None:
+        if not editing:
+            self._accept_text()
+            self._gesture = None
+            self._color_preview = None
+            self._opacity_preview = None
+            self._selection = None
+            self._multi_selection.clear()
+            self._styles.close_color_picker()
+            if self._is_sampling_color:
+                self._finish_color_sampling(None)
+        self._controls_visible = editing
+        self._refresh()
+
+    @property
+    def has_annotations(self) -> bool:
+        return bool(self._document.elements)
+
+    def add_image_patch(self, patch: ImagePatch) -> None:
+        self._document.add(patch)
+        self._set_selected_indexes(set())
+        self._refresh()
+
+    def recording_layer(self) -> QImage:
+        return self._preview_image()
+
     def set_feedback(self, message: str) -> None:
         self._feedback.setText(message)
         self._feedback.setVisible(bool(message))
@@ -195,6 +225,9 @@ class AnnotationCanvas(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:
         with QPainter(self) as painter:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            if self._recording and self._controls_visible:
+                # Windows passes clicks through pixels with zero alpha in layered windows.
+                painter.fillRect(self._target, QColor(0, 0, 0, 1))
             if self._selection_preview is None:
                 painter.drawImage(self._target, self._preview_image())
                 if self._selection is not None and self._editor is None:
@@ -208,7 +241,7 @@ class AnnotationCanvas(QWidget):
                 painter.restore()
             if self._draw_selection_frame is not None:
                 self._draw_selection_frame(painter)
-            else:
+            elif not self._recording:
                 painter.setPen(QPen(QColor("#ffffff"), 1))
                 painter.drawRect(self._target)
 
@@ -380,7 +413,7 @@ class AnnotationCanvas(QWidget):
                     self._shortcuts[alias] = shortcut, action
 
     def _can_use_shortcuts(self) -> bool:
-        return self.can_adjust_selection and self._selection_preview is None
+        return self._controls_visible and self.can_adjust_selection and self._selection_preview is None
 
     def _activate_shortcut(self, action: Callable[[], None]) -> None:
         focused = QApplication.focusWidget()
@@ -737,6 +770,7 @@ class AnnotationCanvas(QWidget):
             action()
             self._selection = None
             self._multi_selection.clear()
+            self.set_feedback("")
             self.setFocus()
             self._refresh()
         else:
@@ -869,6 +903,8 @@ class AnnotationCanvas(QWidget):
         self._refresh()
 
     def _sample_color_at(self, position: QPointF) -> QColor | None:
+        if self._recording and self._sample_screen_color is not None:
+            return self._sample_screen_color(position)
         if self._target.contains(position):
             x, y = self._source_point(position)
             left, top = self._document.origin_px
@@ -919,7 +955,8 @@ class AnnotationCanvas(QWidget):
         if not bounds.isValid():
             return
         rail = QRect(bounds)
-        show_styles = self._selection_preview is None and self._styles.has_controls
+        self._toolbar.setVisible(self._controls_visible and self._selection_preview is None)
+        show_styles = self._toolbar.isVisibleTo(self) and self._styles.has_controls
         self._styles.setVisible(show_styles)
         side_x = bounds.x()
         horizontal_room = False

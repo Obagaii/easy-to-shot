@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from PySide6.QtGui import QImage
 
 from e2s.annotation.document import AnnotationDocument
+from e2s.annotation.elements import ImagePatch
 from e2s.annotation.renderer import render_annotations
 from e2s.capture.geometry import SelectionRect
 from e2s.capture.service import CaptureError, CaptureFrame
@@ -86,12 +87,16 @@ class CaptureSession:
             )
         return self._annotation
 
-    def create_snapshot(self) -> OutputSnapshot:
+    def create_snapshot(self, *, include_text_covers: bool = True) -> OutputSnapshot:
+        """Capture the current crop, optionally exposing the source text underneath OCR covers."""
         selection = self._selection
         if selection is None:
             raise CaptureError("请先框选有效的截图区域。")
         document = self.begin_annotation()
-        image = render_annotations(document.source, document.elements, document.origin_px)
+        elements = document.elements
+        if not include_text_covers:
+            elements = tuple(element for element in elements if not isinstance(element, ImagePatch))
+        image = render_annotations(document.source, elements, document.origin_px)
         # RGBA8888 uses exactly four bytes per pixel with no row padding.
         if image.isNull():
             raise CaptureError("无法生成截图，请缩小选区后重试。")
