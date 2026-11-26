@@ -144,7 +144,8 @@ class AnnotationToolbar(QFrame):
         primary = _PRIMARY.get(tool, tool)
         if primary in self._variants:
             self._variants[primary] = tool
-            self._buttons[primary].setIcon(toolbar_icon(tool.value, primary=True))
+            icon_name = primary.value if primary is Tool.ERASER else tool.value
+            self._buttons[primary].setIcon(toolbar_icon(icon_name, primary=True))
         for group, button in self._buttons.items():
             button.setChecked(group is primary)
 
