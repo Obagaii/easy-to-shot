@@ -5,10 +5,11 @@ from wave import open as open_wave
 import pytest
 from imageio_ffmpeg import get_ffmpeg_exe
 from PIL import Image
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QImage, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+from qfluentwidgets import ComboBox
 
 from e2s.annotation.elements import Tool
 from e2s.capture.recording_export import RecordingFormat
@@ -48,6 +49,7 @@ def test_recording_exports_animated_file_with_live_annotations(
     )
     try:
         assert panel.present(screen, region)
+        assert isinstance(panel._format, ComboBox)
         panel._format.setCurrentText(output_format.name)
         assert panel._mic.isEnabled() == output_format.supports_audio
         assert panel._speaker.isEnabled() == output_format.supports_audio
@@ -115,3 +117,28 @@ def test_recording_exports_animated_file_with_live_annotations(
     finally:
         panel.reject()
 
+
+def test_recording_toolbar_can_be_dragged_from_its_handle(app: QApplication, tmp_path: Path) -> None:
+    screen = app.primaryScreen()
+    image = QImage(80, 80, QImage.Format.Format_RGB32)
+    panel = RegionRecording(lambda: QImage(image), tmp_path / "capture", image.size())
+    region = QRect(screen.availableGeometry().topLeft() + QPoint(500, 300), QSize(80, 80))
+    try:
+        assert panel.present(screen, region)
+        panel.move(screen.availableGeometry().topLeft() + QPoint(100, 100))
+        handle = panel._drag_handle
+        local = QPointF(handle.rect().center())
+        start = QPointF(handle.mapToGlobal(local.toPoint()))
+        original = panel.pos()
+        for kind, position, button, buttons in (
+            (QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseMove, start + QPointF(40, 30), Qt.MouseButton.NoButton,
+             Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseButtonRelease, start + QPointF(40, 30), Qt.MouseButton.LeftButton,
+             Qt.MouseButton.NoButton),
+        ):
+            event = QMouseEvent(kind, local, position, button, buttons, Qt.KeyboardModifier.NoModifier)
+            QApplication.sendEvent(handle, event)
+        assert panel.pos() == original + QPoint(40, 30)
+    finally:
+        panel.reject()

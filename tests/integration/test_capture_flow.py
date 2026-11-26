@@ -352,10 +352,22 @@ def test_recording_opens_for_current_capture_selection(desktop, monkeypatch, tmp
 
     assert panel._region == overlay.selection_geometry(selection)
     assert panel._directory == tmp_path / "EasyToShot"
+    assert overlay.isVisible()
+    assert not overlay.isEnabled()
+    assert panel.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert panel._drag_handle.isVisible()
+    panel.reject()
+    assert overlay.isVisible()
+    assert overlay.isEnabled()
+    assert overlay._displayed_selection() == selection
+
+    QTest.mouseClick(overlay._canvas._toolbar._action_buttons["record"], Qt.MouseButton.LeftButton)
+    panel = controller._live_panel
+    panel._record.click()
     assert not overlay.isVisible()
     panel.reject()
     assert overlay.isVisible()
-    assert overlay._displayed_selection() == selection
+    assert overlay.isEnabled()
 
 
 def test_copy_submits_frozen_pixels_and_restores_workbench(desktop, monkeypatch) -> None:

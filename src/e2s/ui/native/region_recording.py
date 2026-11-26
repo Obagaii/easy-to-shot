@@ -17,13 +17,13 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QDesktopServices, QImage, QKeySequence, QScreen, QShortcut
+from PySide6.QtGui import QDesktopServices, QImage, QKeySequence, QMouseEvent, QScreen, QShortcut
 from PySide6.QtMultimedia import QAudioDevice, QMediaDevices
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -34,10 +34,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from qfluentwidgets import ComboBox
+
 from e2s.capture.recording import RecordingSession
 from e2s.capture.recording_export import RecordingFormat, export_arguments
 from e2s.platform.windows.recording_audio import SystemAudioRecording
 from e2s.platform.windows.window_capture import exclude_capture_window
+from e2s.ui.native.annotation_controls import CAPTURE_CONTROLS_STYLE, describe_control
 from e2s.ui.native.annotation_toolbar import Command, describe_button
 from e2s.ui.native.live_capture import LiveSelectionOutline
 from e2s.ui.native.recording_annotation import RecordingAnnotation
@@ -68,11 +71,18 @@ class Stage(Enum):
 
 
 class RegionRecording(QDialog):
+    recording_started = Signal()
     failed = Signal(str)
     completed = Signal(object)
 
     def __init__(self, grab: Callable[[], QImage], destination: Path, size: QSize) -> None:
-        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        super().__init__(
+            None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._drag_anchor: QPoint | None = None
+        self._excluded_from_capture = False
         self.setWindowTitle("区域录像")
         self._grab = grab
         self._size = QSize(size)
@@ -80,6 +90,7 @@ class RegionRecording(QDialog):
         self._directory = destination.parent
         self._stage = Stage.READY
         self._closed = False
+        self._starting = False
         self._working = TemporaryDirectory(prefix="e2s-recording-", ignore_cleanup_errors=True)
         self._video_path = Path(self._working.name) / "capture.mp4"
         self._system_audio_path = Path(self._working.name) / "system.wav"
@@ -99,27 +110,37 @@ class RegionRecording(QDialog):
         self._session.ready.connect(self._enter_review)
         self._session.failed.connect(self.failed)
 
-        self.setStyleSheet("""
-            QDialog { background: #ffffff; }
-            QLabel, QToolButton, QComboBox { color: #262626; }
-            QToolButton { border: 0; border-radius: 6px; padding: 3px; }
-            QToolButton:hover { background: #e6f4ff; }
-            QToolButton:checked { background: #bae0ff; }
-            QToolButton::menu-indicator { image: none; width: 0; }
-            QComboBox { border: 1px solid #d9d9d9; border-radius: 6px; padding: 4px 8px; }
-            QComboBox:hover { border-color: #69b1ff; }
+        self.setStyleSheet(CAPTURE_CONTROLS_STYLE + """
+            QToolButton[recordingToggle="true"]:checked { background: #bae0ff; }
+            QLabel { color: #262626; }
         """)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        surface = QFrame(self)
+        surface.setProperty("toolbarSurface", True)
+        layout.addWidget(surface)
+        surface_layout = QVBoxLayout(surface)
+        surface_layout.setContentsMargins(7, 5, 7, 5)
+        surface_layout.setSpacing(2)
         self._controls = QHBoxLayout()
-        layout.addLayout(self._controls)
+        self._controls.setSpacing(4)
+        surface_layout.addLayout(self._controls)
+        self._drag_handle = QToolButton(self)
+        self._drag_handle.setIcon(toolbar_icon("drag_handle"))
+        self._drag_handle.setIconSize(QSize(18, 22))
+        self._drag_handle.setFixedSize(17, 38)
+        describe_control(self._drag_handle, "拖动录像工具栏")
+        self._drag_handle.setCursor(Qt.CursorShape.SizeAllCursor)
+        self._drag_handle.installEventFilter(self)
+        self._controls.addWidget(self._drag_handle)
         self._record = self._button("record_start", "开始录像", ("Ctrl+S",), self._toggle_recording)
         self._pause = self._button("record_pause", "暂停 / 继续", ("Space",), self._toggle_pause)
         self._clock = QLabel("00:00", self)
         self._clock.setMinimumWidth(50)
         self._clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._controls.addWidget(self._clock)
-        self._format = QComboBox(self)
+        self._format = ComboBox(self)
+        self._format.setMinimumWidth(90)
         self._format.addItems([output_format.name for output_format in RecordingFormat])
         self._format.setAccessibleName("录像保存格式")
         self._format.currentIndexChanged.connect(self._update_controls)
@@ -131,8 +152,10 @@ class RegionRecording(QDialog):
         self._mic.setMenu(menu)
         self._speaker = self._button("speaker", "录制系统声音")
         self._speaker.setCheckable(True)
+        self._speaker.setProperty("recordingToggle", True)
         self._annotate = self._button("pen", "录像标注", ("Ctrl+D",), self._toggle_annotation)
         self._annotate.setCheckable(True)
+        self._annotate.setProperty("recordingToggle", True)
         self._save = self._button("save", "保存录像", ("Ctrl+E",), self._save_video)
         self._button("record_folder", "打开录像文件夹", (), self._open_directory)
         self._button("cancel", "关闭录像", ("Esc",), self.reject)
@@ -140,11 +163,31 @@ class RegionRecording(QDialog):
         self._status.setWordWrap(True)
         self._status.setMaximumWidth(440)
         self._status.hide()
-        layout.addWidget(self._status)
+        surface_layout.addWidget(self._status)
         self._update_controls()
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self._drag_handle and isinstance(event, QMouseEvent):
+            if (event.type() == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._drag_anchor = event.globalPosition().toPoint() - self.pos()
+                self._drag_handle.grabMouse()
+                return True
+            if self._drag_anchor is not None and event.type() == QEvent.Type.MouseMove:
+                point = event.globalPosition().toPoint() - self._drag_anchor
+                screen = QApplication.screenAt(event.globalPosition().toPoint()) or self._screen
+                if screen is not None:
+                    area = screen.availableGeometry()
+                    point.setX(max(area.left(), min(point.x(), area.right() + 1 - self.width())))
+                    point.setY(max(area.top(), min(point.y(), area.bottom() + 1 - self.height())))
+                if self._excluded_from_capture or not QRect(point, self.size()).intersects(self._region):
+                    self.move(point)
+                return True
+            if self._drag_anchor is not None and event.type() == QEvent.Type.MouseButtonRelease:
+                self._drag_anchor = None
+                self._drag_handle.releaseMouse()
+                return True
         if (
             self._stage in (Stage.RECORDING, Stage.PAUSED)
             and event.type() == QEvent.Type.Show
@@ -170,7 +213,7 @@ class RegionRecording(QDialog):
         button = QToolButton(self)
         button.setIcon(toolbar_icon(icon))
         button.setIconSize(QSize(22, 22))
-        button.setFixedSize(32, 32)
+        button.setFixedSize(38, 38)
         if keys:
             describe_button(button, Command(name, keys))
             for key in keys:
@@ -195,24 +238,35 @@ class RegionRecording(QDialog):
         shortcut.setAutoRepeat(False)
         shortcut.activated.connect(trigger)
 
-    def present(self, screen: QScreen, region: QRect) -> bool:
+    def present(self, screen: QScreen, region: QRect, anchor: QRect | None = None) -> bool:
         self._screen, self._region = screen, region
         self.winId()
         self.windowHandle().setScreen(screen)
         self.adjustSize()
-        outside_region = self._place_outside_region()
+        self._place_outside_region()
+        if anchor is not None:
+            area = screen.availableGeometry()
+            x = max(area.left(), min(anchor.left(), area.right() + 1 - self.width()))
+            y = anchor.bottom() + 5
+            if y + self.height() > area.bottom() + 1:
+                y = anchor.top() - self.height() - 5
+            self.move(x, max(area.top(), y))
         self.show()
-        if not exclude_capture_window(int(self.winId())) and not outside_region:
-            self.hide()
-            return False
-        self._outline.show_around(screen, region)
+        self._excluded_from_capture = exclude_capture_window(int(self.winId()))
+        if not self._excluded_from_capture:
+            outside_region = not QRect(self.pos(), self.size()).intersects(region)
+            if not outside_region:
+                self._place_outside_region()
+            if not outside_region:
+                self.hide()
+                return False
         return True
 
     def _place_outside_region(self) -> bool:
         if self._screen is None:
             return False
         area = self._screen.availableGeometry().adjusted(8, 8, -8, -8)
-        width, height = self.width() + 16, self.height() + 42
+        width, height = self.width(), self.height()
         region = self._region
         x = max(area.left(), min(region.left(), area.right() - width))
         y = max(area.top(), min(region.top(), area.bottom() - height))
@@ -222,9 +276,10 @@ class RegionRecording(QDialog):
         ):
             box = QRect(point, QSize(width, height))
             if area.contains(box) and not box.intersects(region):
-                self.move(point + QPoint(8, 34))
+                if self._excluded_from_capture or not QRect(point, self.size()).intersects(self._region):
+                    self.move(point)
                 return True
-        self.move(area.topLeft() + QPoint(0, 32))
+        self.move(area.topLeft())
         return False
 
     def start(self) -> None:
@@ -255,8 +310,18 @@ class RegionRecording(QDialog):
                 return
         self._has_microphone = audio is not None
         self._stage = Stage.RECORDING
+        self._starting = True
         self._update_controls()
-        self._session.start(audio)
+        self.recording_started.emit()
+        if self._screen is not None:
+            self._outline.show_around(self._screen, self._region)
+        QTimer.singleShot(100, self, lambda: self._start_session(audio))
+
+    def _start_session(self, audio: QAudioDevice | None) -> None:
+        if not self._closed and self._stage in (Stage.RECORDING, Stage.PAUSED):
+            self._session.start(audio)
+            self._starting = False
+            self._update_controls()
 
     def _finish_system_audio(self) -> None:
         audio, self._system_audio = self._system_audio, None
@@ -354,6 +419,8 @@ class RegionRecording(QDialog):
         mic_label = self._audio_device.description() if self._audio_device else "录制麦克风"
         self._mic.setToolTip(mic_label if audio_enabled else "仅 MP4 支持麦克风录音")
         self._speaker.setToolTip("录制系统声音" if audio_enabled else "仅 MP4 支持系统录音")
+        self._record.setEnabled(not self._starting)
+        self._pause.setEnabled(not self._starting)
         self._pause.setVisible(recording)
         self._annotate.setVisible(recording)
         self._record.setVisible(ready or recording)
