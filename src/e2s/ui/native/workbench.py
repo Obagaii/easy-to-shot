@@ -67,7 +67,7 @@ class Workbench(QMainWindow):
 
     def __init__(self, icon: QIcon, data_root: Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("Easy to Shot - 主菜单")
+        self.setWindowTitle("𝘌2𝘚")
         self.setWindowIcon(icon)
         self.resize(960, 650)
         self.setMinimumSize(760, 520)

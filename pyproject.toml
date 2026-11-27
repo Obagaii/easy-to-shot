@@ -31,7 +31,7 @@ easy-to-shot = "e2s.app.bootstrap:main"
 version = {attr = "e2s.__version__"}
 
 [tool.setuptools.package-data]
-e2s = ["ui/native/assets/*.svg"]
+e2s = ["ui/native/assets/*.svg", "ui/native/assets/*.png"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

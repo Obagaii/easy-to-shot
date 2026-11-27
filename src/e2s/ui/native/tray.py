@@ -1,23 +1,18 @@
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QIcon, QPainter, QPixmap
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 
-_ICON_PATH = Path(__file__).parent / "assets" / "e2s.svg"
+_ICON_PATH = Path(__file__).parent / "assets" / "e2s.png"
 
 
 def create_app_icon() -> QIcon:
-    renderer = QSvgRenderer(str(_ICON_PATH))
+    source = QPixmap(str(_ICON_PATH))
     icon = QIcon()
     for size in (16, 24, 32, 48, 64, 128, 256):
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        with QPainter(pixmap) as painter:
-            renderer.render(painter, QRectF(0, 0, size, size))
-        icon.addPixmap(pixmap)
+        icon.addPixmap(source.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
     return icon
 
 
