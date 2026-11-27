@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
 from e2s.capture.geometry import SelectionRect, move_selection
-from e2s.capture.history_session import deserialize_session
+from e2s.capture.history_session import deserialize_session, serialize_session
 from e2s.capture.ocr import OcrError, OcrLine, ScreenshotRecognizer
 from e2s.capture.qr import CodeDetection, scan_codes
 from e2s.capture.service import CaptureError, capture_frame
@@ -35,11 +35,14 @@ from e2s.platform.windows.displays import (
 )
 from e2s.platform.windows.file_dialogs import choose_image_save_path
 from e2s.platform.windows.hotkeys import GlobalHotkey
+from e2s.platform.windows.global_mouse import GlobalMouseCapture
+from e2s.storage.quick_capture import load_quick_capture
 from e2s.platform.windows.uia_selection import WindowsSelector
 from e2s.platform.windows.window_capture import scroll_window_below
 from e2s.ui.native.live_capture import grab_region, release_live_capture
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.pinned_image import PinnedImage
+from e2s.ui.native.quick_capture import QuickCaptureOverlay, screen_for_native_point
 from e2s.ui.native.region_recording import RegionRecording
 from e2s.ui.native.scrolling_capture import ScrollingCapture
 from e2s.ui.native.tray import Tray
@@ -75,6 +78,16 @@ class AppController(QObject):
         self._workbench = workbench
         self._tray = tray
         self._hotkey = GlobalHotkey(app, self.start_capture)
+        self._quick_overlay = None
+        self._quick_frame = None
+        self._quick_mouse = GlobalMouseCapture(
+            load_quick_capture(workbench.settings),
+            lambda: not self._is_closing and self._capture_screen is None
+            and self._quick_overlay is None and QApplication.activeModalWidget() is None,
+        )
+        self._quick_mouse.drag_event.connect(self._on_quick_drag, Qt.ConnectionType.QueuedConnection)
+        if not self._quick_mouse.available:
+            workbench._quick_status.setText("无法启用全局鼠标监听，请重新启动应用。")
         self._selector = WindowsSelector(self)
         self._capture_screen: QScreen | None = None
         self._capture_source = CaptureSource.HOTKEY
@@ -114,6 +127,7 @@ class AppController(QObject):
         workbench.capture_requested.connect(lambda: self.start_capture(CaptureSource.WORKBENCH))
         workbench.history_edit_requested.connect(self._edit_history)
         workbench.hotkey_requested.connect(self._replace_hotkey)
+        workbench.quick_capture_changed.connect(self._set_quick_binding)
 
     def start(self) -> None:
         self._workbench.history.repair_on_startup(limit=200)
@@ -142,6 +156,8 @@ class AppController(QObject):
         self._tray.hide()
         self._workbench.close()
         self._hotkey.close()
+        self._quick_mouse.close()
+        self._close_quick_capture()
         self._selector.close()
         self._save_pool.waitForDone()
 
@@ -152,6 +168,8 @@ class AppController(QObject):
 
     @Slot()
     def start_capture(self, source: CaptureSource = CaptureSource.HOTKEY) -> None:
+        if self._quick_overlay is not None:
+            return
         if isinstance(QApplication.activeModalWidget(), ShortcutDialog):
             return
         if self._is_closing:
@@ -178,6 +196,56 @@ class AppController(QObject):
             self._workbench.hide()
         # Let Qt dismiss the triggering UI and Windows compose the updated desktop.
         self._capture_timer.start(_CAPTURE_SETTLE_MS)
+
+    @Slot(object)
+    def _set_quick_binding(self, binding) -> None:
+        self._quick_mouse.binding = binding
+
+    @Slot(str, int, int)
+    def _on_quick_drag(self, phase: str, x: int, y: int) -> None:
+        if self._is_closing:
+            return
+        if phase == "begin":
+            if self._capture_screen is not None or self._quick_overlay is not None:
+                return
+            screen, bounds = screen_for_native_point(self._app, x, y)
+            if screen is None or bounds is None:
+                self._tray.notify("未找到鼠标所在的屏幕，请重试。")
+                return
+            try:
+                self._quick_frame = capture_frame(screen)
+            except CaptureError as error:
+                self._tray.notify(str(error))
+                return
+            self._quick_overlay = QuickCaptureOverlay(screen, self._quick_frame, bounds, (x, y))
+            self._quick_overlay.show()
+        elif self._quick_overlay is not None:
+            self._quick_overlay.update_end(x, y)
+            if phase == "finish":
+                selection = self._quick_overlay.selection()
+                frame = self._quick_frame
+                self._close_quick_capture()
+                if selection is None or frame is None:
+                    return
+                try:
+                    session = CaptureSession(frame, CaptureSource.HOTKEY)
+                    session.set_selection(selection)
+                    snapshot = replace(session.create_snapshot(), history_data=serialize_session(session))
+                    result = copy_snapshot(snapshot)
+                    if result.state is TaskState.SUCCEEDED:
+                        self.snapshot_ready.emit(snapshot)
+                        self.output_succeeded.emit(to_service_snapshot(snapshot), result, "copy")
+                    else:
+                        self._tray.notify("无法复制截图，请重试。")
+                except (CaptureError, MemoryError, ValueError):
+                    self._tray.notify("无法生成截图，请重试。")
+
+    def _close_quick_capture(self) -> None:
+        if self._quick_overlay is not None:
+            self._quick_overlay.close()
+            self._quick_overlay.deleteLater()
+            self._quick_overlay = None
+        self._quick_frame = None
 
     @Slot()
     def _show_frozen_frame(self) -> None:
@@ -578,6 +646,7 @@ class AppController(QObject):
 
     @Slot()
     def _on_displays_changed(self) -> None:
+        self._close_quick_capture()
         if self._capture_screen is not None:
             self._finish_capture()
             self._tray.notify("屏幕配置已变化，请重新截图。")
@@ -621,3 +690,5 @@ class AppController(QObject):
     @Slot(QKeySequence)
     def _replace_hotkey(self, sequence: QKeySequence) -> None:
         self._workbench.show_hotkey_state(self._hotkey.replace(sequence))
+
+

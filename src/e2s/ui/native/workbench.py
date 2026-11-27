@@ -4,7 +4,7 @@ from PySide6.QtCore import QSettings, QSize, QStandardPaths, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
-    QLineEdit, QMainWindow, QMessageBox,
+    QDialog, QLineEdit, QMainWindow, QMessageBox,
     QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -20,10 +20,12 @@ from e2s.platform.windows.credentials import (
 )
 from e2s.platform.windows.hotkeys import DEFAULT_HOTKEY, HotkeyError, HotkeyState
 from e2s.storage.history import HistoryService, HistoryStore
+from e2s.storage.quick_capture import QuickCaptureBinding, load_quick_capture, save_quick_capture
 from e2s.storage.shortcuts import canonical_shortcut, load_shortcuts, save_shortcuts
 from e2s.ui.native.annotation_toolbar import _ACTION_COMMANDS, _TOOL_COMMANDS
 from e2s.ui.native.history_page import HistoryPage
 from e2s.ui.native.shortcut_dialog import ShortcutDialog
+from e2s.ui.native.quick_capture_dialog import QuickCaptureDialog, binding_label
 
 _HOTKEY_MESSAGES = {
     HotkeyError.INVALID: "请输入包含 Ctrl、Shift 或 Alt 的单个组合键。",
@@ -64,6 +66,7 @@ class Workbench(QMainWindow):
     capture_requested = Signal()
     hotkey_requested = Signal(QKeySequence)
     history_edit_requested = Signal(object)
+    quick_capture_changed = Signal(object)
 
     def __init__(self, icon: QIcon, data_root: Path | None = None) -> None:
         super().__init__()
@@ -100,6 +103,7 @@ class Workbench(QMainWindow):
         self._navigation.expand(False)
         entries = (
             ("hotkey", FluentIcon.SETTING, "全局热键"),
+            ("quick", FluentIcon.SPEED_HIGH, "快速截图"),
             ("history", FluentIcon.HISTORY, "截图历史"),
             ("ocr", FluentIcon.LANGUAGE, "OCR 和翻译"),
             ("model", FluentIcon.ROBOT, "AI 模型"),
@@ -111,7 +115,7 @@ class Workbench(QMainWindow):
             )
         side.addWidget(self._navigation, 1)
         self._pages = QStackedWidget()
-        for page in (self._hotkey_page(), self._history_page(), self._ocr_page(),
+        for page in (self._hotkey_page(), self._quick_capture_page(), self._history_page(), self._ocr_page(),
                      self._model_page(), self._about_page()):
             self._pages.addWidget(page)
 
@@ -236,6 +240,40 @@ class Workbench(QMainWindow):
             return "保存失败，请检查应用数据目录的写入权限。"
         return ""
 
+    def _quick_capture_page(self) -> QWidget:
+        page, layout = self._page("快速截图", "配置激活按键和鼠标拖动的快捷操作。")
+        layout.addWidget(QLabel("快速截图", objectName="section"))
+        layout.addWidget(QLabel("按住激活按键并拖动鼠标，松开后执行操作。", objectName="hint"))
+        card = ShortcutCard()
+        row = QHBoxLayout(card)
+        row.setContentsMargins(18, 10, 18, 10)
+        row.addWidget(QLabel("截图复制到剪贴板"), 1)
+        self._quick_button = PushButton()
+        self._quick_button.setAccessibleName("配置截图复制到剪贴板快捷键")
+        self._quick_button.clicked.connect(self._edit_quick_capture)
+        row.addWidget(self._quick_button)
+        layout.addWidget(card)
+        self._quick_status = QLabel(wordWrap=True, objectName="hint")
+        layout.addWidget(self._quick_status)
+        layout.addStretch()
+        self._refresh_quick_capture()
+        return page
+
+    def _refresh_quick_capture(self) -> None:
+        self._quick_button.setText(binding_label(load_quick_capture(self.settings)))
+
+    def _edit_quick_capture(self) -> None:
+        dialog = QuickCaptureDialog(load_quick_capture(self.settings), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        binding = dialog.binding()
+        save_quick_capture(self.settings, binding)
+        if self.settings.status() != QSettings.Status.NoError:
+            self._quick_status.setText("保存失败，请检查应用数据目录的写入权限。")
+            return
+        self._refresh_quick_capture()
+        self.quick_capture_changed.emit(binding)
+
     def _history_page(self) -> QWidget:
         page, layout = self._page("截图历史", "查看和管理已完成的截图。")
         self._history_page_widget = HistoryPage(self.history, page)
@@ -324,10 +362,10 @@ class Workbench(QMainWindow):
 
     def _change_page(self, index: int) -> None:
         self._pages.setCurrentIndex(index)
-        self._navigation.setCurrentItem(("hotkey", "history", "ocr", "model", "about")[index])
-        if index == 1:
+        self._navigation.setCurrentItem(("hotkey", "quick", "history", "ocr", "model", "about")[index])
+        if index == 2:
             self.refresh_history()
-        elif index == 3:
+        elif index == 4:
             self._update_key_status()
 
     def refresh_history(self) -> None:
@@ -379,3 +417,5 @@ class Workbench(QMainWindow):
         self._refresh_shortcut_buttons()
         if state.active and state.error is None:
             self.settings.setValue("hotkey/capture", state.active)
+
+

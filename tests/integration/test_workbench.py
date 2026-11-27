@@ -48,7 +48,7 @@ def test_navigation_and_tray_hotkey_entry_select_the_right_page(
     app: QApplication, tmp_path: Path
 ) -> None:
     window = Workbench(create_app_icon(), tmp_path)
-    for index, route in enumerate(("hotkey", "history", "ocr", "model", "about")):
+    for index, route in enumerate(("hotkey", "quick", "history", "ocr", "model", "about")):
         window._navigation.panel.widget(route).click()
         assert window._pages.currentIndex() == index
     window.focus_hotkey_settings()
@@ -238,7 +238,7 @@ def test_history_thumbnail_opens_preview_and_switches_screen(app: QApplication, 
     window.history.record_success(snapshot, TaskResult(snapshot.operation_id, TaskState.SUCCEEDED), "copy")
     window.refresh_history()
     page = window._history_page_widget
-    window._change_page(1)
+    window._change_page(2)
     window.show()
     app.processEvents()
     try:
@@ -269,3 +269,4 @@ def test_history_thumbnail_opens_preview_and_switches_screen(app: QApplication, 
         preview.close()
     finally:
         window.close()
+
