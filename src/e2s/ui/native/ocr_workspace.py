@@ -1,6 +1,6 @@
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QMouseEvent, QPainter, QPixmap, QPolygonF, QRegion, QShortcut, QTextBlockFormat, QTextCursor
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QToolButton, QWidget
+from PySide6.QtGui import QImage, QKeySequence, QMouseEvent, QPainter, QPixmap, QPolygonF, QRegion, QShortcut, QTextCursor
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QWidget
 from qfluentwidgets import ComboBox
 
 from e2s.capture.ocr import OcrLine
@@ -8,6 +8,8 @@ from e2s.capture.session import OutputSnapshot
 from e2s.capture.stream_translation import StreamingTranslator
 from e2s.platform.windows.credentials import CredentialError, get_deepseek_key
 from e2s.ui.native.annotation_controls import CAPTURE_CONTROLS_STYLE, PanelPosition, describe_control
+from e2s.ui.native.ocr_layout import prepare_text_rows
+from e2s.ui.native.ocr_text_layer import OcrTextLayer
 from e2s.ui.native.toolbar_icons import toolbar_icon
 from e2s.ui.native.workbench import LANGUAGES
 
@@ -70,58 +72,34 @@ class OcrWorkspace(QWidget):
         self._original.show()
 
         image = snapshot.to_image()
-        background = image.pixelColor(0, 0)
-        foreground = "#111111" if background.lightness() > 128 else "#ffffff"
-        with QPainter(image) as painter:
-            for line in lines:
-                polygon = QPolygonF([QPointF(x, y) for x, y in line.corners])
-                box = polygon.boundingRect()
-                sample = QPoint(max(0, min(image.width() - 1, round(box.left()))),
-                                max(0, min(image.height() - 1, round(box.top() - 2))))
+        self._rows = prepare_text_rows(image, lines, region.width() / image.width(),
+                                       region.height() / image.height())
+        cleaned = image.copy()
+        with QPainter(cleaned) as painter:
+            for row in self._rows:
+                polygon = QPolygonF([QPointF(x, y) for x, y in row.line.corners])
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(image.pixelColor(sample))
+                painter.setBrush(row.background)
                 painter.drawPolygon(polygon)
         self._background = QLabel(self)
         self._background.setGeometry(region)
         self._background.setScaledContents(True)
-        self._background.setPixmap(QPixmap.fromImage(image))
+        self._background.setPixmap(QPixmap.fromImage(cleaned))
         self._background.show()
-        self._editor = QPlainTextEdit(self)
+        self._editor = OcrTextLayer(self._rows, self)
         self._editor.setObjectName("ocrTextLayer")
         self._editor.setAccessibleName("识别文字")
         self._editor.setGeometry(region)
-        self._editor.setPlainText(self._source_text)
         self._editor.setReadOnly(True)
-        self._editor.setStyleSheet(
-            f"QPlainTextEdit {{ background: transparent; color: {foreground}; "
-            "border: none; padding: 4px; selection-background-color: #1677ff; }"
+        self._editor.document().setDocumentMargin(0)
+        self._editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._normal_style = (
+            "QPlainTextEdit { background: transparent; color: #111111; "
+            "border: none; padding: 0; selection-background-color: #1677ff; }"
         )
-        self._normal_style = self._editor.styleSheet()
-        if lines:
-            heights = [max(y for _, y in line.corners) - min(y for _, y in line.corners)
-                       for line in lines]
-            height = sorted(heights)[len(heights) // 2]
-            font = QFont("Microsoft YaHei UI")
-            font.setPixelSize(max(10, round(height * region.height() / image.height() * 0.85)))
-            self._editor.setFont(font)
-            cursor = QTextCursor(self._editor.document())
-            cursor.select(QTextCursor.SelectionType.Document)
-            cursor.removeSelectedText()
-            previous_bottom = 0.0
-            scale_x = region.width() / image.width()
-            scale_y = region.height() / image.height()
-            for index, line in enumerate(lines):
-                left = min(x for x, _ in line.corners) * scale_x
-                top = min(y for _, y in line.corners) * scale_y
-                bottom = max(y for _, y in line.corners) * scale_y
-                if index:
-                    cursor.insertBlock()
-                block = QTextBlockFormat()
-                block.setLeftMargin(max(0, left - 4))
-                block.setTopMargin(max(0, top - previous_bottom - 4))
-                cursor.setBlockFormat(block)
-                cursor.insertText(line.text)
-                previous_bottom = bottom
+        self._editor.setStyleSheet(self._normal_style)
+        self._apply_text_layout(self._source_text)
         self._editor.show()
 
         self._toolbar = QFrame(self)
@@ -166,6 +144,9 @@ class OcrWorkspace(QWidget):
         self._toolbar.raise_()
         self._editor.setFocus()
         self._update_mask()
+
+    def _apply_text_layout(self, text: str) -> None:
+        self._editor.setPlainText(text)
 
     def _on_original_moved(self) -> None:
         if not self._is_original:
@@ -219,6 +200,7 @@ class OcrWorkspace(QWidget):
             self._editor.setFocus()
         else:
             self._source_text = self._editor.toPlainText()
+            self._apply_text_layout(self._source_text)
 
     def start_translation(self) -> None:
         text = self._editor.toPlainText().strip()
@@ -244,14 +226,14 @@ class OcrWorkspace(QWidget):
         self._translator.translate(text, self._language.currentData(), model, key)
 
     def _show_stream(self, text: str) -> None:
-        self._editor.setPlainText(text)
+        self._apply_text_layout(text)
 
     def _translation_finished(self, text: str) -> None:
-        self._editor.setPlainText(text)
+        self._apply_text_layout(text)
         self._translate.setEnabled(True)
 
     def _translation_failed(self, message: str) -> None:
-        self._editor.setPlainText(self._source_text)
+        self._apply_text_layout(self._source_text)
         self._translate.setEnabled(True)
         self._status.setText(message)
         self._status.adjustSize()
