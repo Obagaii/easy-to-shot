@@ -3,28 +3,27 @@ from collections.abc import Callable
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
+    QApplication, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget,
 )
-from qfluentwidgets import IndeterminateProgressRing, PrimaryPushButton, PushButton
+from qfluentwidgets import IndeterminateProgressRing, MessageBoxBase, PushButton
 
 
-class ShortcutDialog(QDialog):
+class ShortcutDialog(MessageBoxBase):
     def __init__(
         self, title: str, values: tuple[str, ...], validate: Callable[[tuple[str, ...]], str],
         parent: QWidget, *, single: bool = False,
     ) -> None:
+        self._recording: int | None = None
         super().__init__(parent)
         self.setWindowTitle(f"{title}的按键配置")
-        self.setMinimumWidth(520)
+        self.widget.setMinimumWidth(520)
         self._validate = validate
         self._single = single
         self._rows: list[QWidget] = []
         self._buttons: list[PushButton] = []
         self._values: list[str] = []
-        self._recording: int | None = None
         self._candidate = ""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
+        layout = self.viewLayout
         layout.setSpacing(14)
         heading = QLabel(f"“{title}”的按键配置")
         heading.setStyleSheet("font-size: 20px; font-weight: 600;")
@@ -45,15 +44,14 @@ class ShortcutDialog(QDialog):
         self._error = QLabel(wordWrap=True)
         self._error.setStyleSheet("color: #c42b1c;")
         layout.addWidget(self._error)
-        footer = QHBoxLayout()
-        footer.addStretch()
-        cancel = PushButton("取消")
-        cancel.clicked.connect(self.reject)
-        self._confirm_button = PrimaryPushButton("确定")
-        self._confirm_button.clicked.connect(self._confirm)
-        footer.addWidget(cancel)
-        footer.addWidget(self._confirm_button)
-        layout.addLayout(footer)
+        self.cancelButton.setText("取消")
+        self._confirm_button = self.yesButton
+        self._confirm_button.setText("确定")
+        self.buttonLayout.removeWidget(self.yesButton)
+        self.buttonLayout.removeWidget(self.cancelButton)
+        self.buttonLayout.addStretch()
+        self.buttonLayout.addWidget(self.cancelButton)
+        self.buttonLayout.addWidget(self.yesButton)
         for value in values:
             self._add_entry(value)
         self._update_add()
@@ -116,7 +114,7 @@ class ShortcutDialog(QDialog):
     def eventFilter(self, watched, event) -> bool:
         if self._recording is None or not isinstance(watched, QWidget):
             return super().eventFilter(watched, event)
-        if watched.window() is not self:
+        if watched is not self and not self.isAncestorOf(watched):
             return super().eventFilter(watched, event)
         if event.type() == QEvent.Type.ShortcutOverride:
             event.accept()
@@ -179,18 +177,21 @@ class ShortcutDialog(QDialog):
     def _update_add(self) -> None:
         self._add.setEnabled(self._recording is None and (not self._single or not self._rows))
 
-    def _confirm(self) -> None:
+    def validate(self) -> bool:
         if self._recording is not None:
-            return
+            return False
         if any(not value for value in self._values):
             self._error.setText("请设置按键，或删除空的按键配置。")
-            return
+            return False
         error = self._validate(tuple(self._values))
         if error:
             self._error.setText(error)
-            return
-        self.accept()
+            return False
+        return True
 
+    def _confirm(self) -> None:
+        if self.validate():
+            self.accept()
     def done(self, result: int) -> None:
         if self._recording is not None:
             QApplication.instance().removeEventFilter(self)

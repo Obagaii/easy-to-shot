@@ -4,7 +4,7 @@ from PySide6.QtCore import QSettings, QSize, QStandardPaths, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QKeySequenceEdit, QLabel,
-    QDialog, QLineEdit, QMainWindow, QMessageBox,
+    QDialog, QLineEdit, QMainWindow,
     QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -417,5 +417,3 @@ class Workbench(QMainWindow):
         self._refresh_shortcut_buttons()
         if state.active and state.error is None:
             self.settings.setValue("hotkey/capture", state.active)
-
-

@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from qfluentwidgets import LineEdit
+
 from e2s.annotation.elements import (
     ERASER_TOOLS,
     HIGHLIGHT_TOOLS,
@@ -29,6 +31,7 @@ from e2s.annotation.elements import (
     Tool,
     WatermarkStyle,
 )
+from e2s.ui.native.dialogs import prompt_text
 from e2s.ui.native.annotation_color_picker import AnnotationColorPicker
 from e2s.ui.native.annotation_controls import (
     CAPTURE_CONTROLS_STYLE,
@@ -405,7 +408,7 @@ class AnnotationStylePanel(QFrame):
         family.setMinimumWidth(116)
         family.clicked.connect(self._choose_font)
         self._add_section("family", "字体", family)
-        text = QLineEdit(self._content)
+        text = LineEdit(self._content)
         text.setAccessibleName("水印内容")
         text.setPlaceholderText("输入水印内容")
         text.setFixedHeight(34)
@@ -616,7 +619,7 @@ class AnnotationStylePanel(QFrame):
             return
         text = self._controls["watermark_text"].text()
         self._set("watermark_text", text)
-        name, accepted = QInputDialog.getText(self, "保存水印模板", "模板名称")
+        name, accepted = prompt_text(self, "保存水印模板", "模板名称")
         if not accepted or not name.strip():
             return
         templates = self._settings.value("watermarkTemplates", {})

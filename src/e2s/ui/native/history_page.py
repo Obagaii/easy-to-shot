@@ -6,12 +6,13 @@ import sys
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDateEdit, QHBoxLayout, QLabel, QMenu, QMessageBox, QScrollArea,
+    QApplication, QHBoxLayout, QLabel, QScrollArea,
     QVBoxLayout, QWidget,
 )
-from qfluentwidgets import CardWidget, CheckBox, ComboBox, PushButton
+from qfluentwidgets import Action, CardWidget, CheckBox, ComboBox, DatePicker, DropDownPushButton, PushButton, RoundMenu
 
 from e2s.storage.history import HistoryService, HistoryStatus
+from e2s.ui.native.dialogs import confirm_action, show_warning
 from e2s.ui.native.history_preview import HistoryPreview, HistoryThumbnail, load_history_screen
 
 
@@ -51,11 +52,11 @@ class HistoryPage(QWidget):
         self._date_filter = CheckBox("按时间筛选")
         self._date_filter.toggled.connect(self._filters_changed)
         dates.addWidget(self._date_filter)
-        self._start = QDateEdit(QDate.currentDate().addDays(-30))
-        self._end = QDateEdit(QDate.currentDate())
+        self._start = DatePicker(format=DatePicker.YYYY_MM_DD)
+        self._end = DatePicker(format=DatePicker.YYYY_MM_DD)
+        self._start.setDate(QDate.currentDate().addDays(-30))
+        self._end.setDate(QDate.currentDate())
         for date in (self._start, self._end):
-            date.setCalendarPopup(True)
-            date.setDisplayFormat("yyyy-MM-dd")
             date.dateChanged.connect(self._filters_changed)
             dates.addWidget(date)
         dates.addStretch()
@@ -117,7 +118,7 @@ class HistoryPage(QWidget):
                     date = datetime.fromisoformat(entry.created_at_utc).astimezone().date()
                 except ValueError:
                     continue
-                if not (self._start.date().toPython() <= date <= self._end.date().toPython()):
+                if not (self._start.getDate().toPython() <= date <= self._end.getDate().toPython()):
                     continue
             filtered.append(entry)
         self._entries = tuple(filtered)
@@ -173,10 +174,14 @@ class HistoryPage(QWidget):
             edit.setToolTip("此记录没有原始屏幕和编辑数据")
         edit.clicked.connect(lambda: self._edit(entry))
         actions.addWidget(edit)
-        more = PushButton("更多")
-        menu = QMenu(more)
-        menu.addAction("在资源管理器中打开", lambda: self._open_file(entry))
-        menu.addAction("删除", lambda: self._delete_entries((entry.history_item_id,)))
+        more = DropDownPushButton("更多")
+        menu = RoundMenu(parent=more)
+        open_action = Action("在资源管理器中打开", menu)
+        open_action.triggered.connect(lambda: self._open_file(entry))
+        menu.addAction(open_action)
+        delete_action = Action("删除", menu)
+        delete_action.triggered.connect(lambda: self._delete_entries((entry.history_item_id,)))
+        menu.addAction(delete_action)
         more.setMenu(menu)
         actions.addWidget(more)
         actions.addStretch()
@@ -208,7 +213,7 @@ class HistoryPage(QWidget):
     def _preview(self, entry) -> None:
         result = QPixmap(str(self._history.store.image_path(entry)))
         if result.isNull():
-            QMessageBox.warning(self, "截图历史", "图片文件不可用。")
+            show_warning(self, "截图历史", "图片文件不可用。")
             return
         screen = load_history_screen(self._history.store, entry)
         dialog = HistoryPreview(result, screen, self.window())
@@ -217,7 +222,7 @@ class HistoryPage(QWidget):
     def _copy(self, entry) -> None:
         image = QPixmap(str(self._history.store.image_path(entry)))
         if image.isNull():
-            QMessageBox.warning(self, "截图历史", "图片文件不可用。")
+            show_warning(self, "截图历史", "图片文件不可用。")
         else:
             QApplication.clipboard().setPixmap(image)
 
@@ -226,7 +231,7 @@ class HistoryPage(QWidget):
             payload = self._history.store.session_path(entry).read_bytes()
             screen_id = json.loads(payload)["screen_id"]
         except (OSError, ValueError, KeyError, TypeError):
-            QMessageBox.warning(self, "截图历史", "无法读取这条截图的编辑数据。")
+            show_warning(self, "截图历史", "无法读取这条截图的编辑数据。")
             return
         self.edit_requested.emit({"payload": payload, "screen_id": screen_id,
                                   "history_item_id": entry.history_item_id})
@@ -234,7 +239,7 @@ class HistoryPage(QWidget):
     def _open_file(self, entry) -> None:
         path = self._history.store.image_path(entry)
         if not path.is_file():
-            QMessageBox.warning(self, "截图历史", "图片文件不可用。")
+            show_warning(self, "截图历史", "图片文件不可用。")
         elif sys.platform == "win32":
             subprocess.Popen(["explorer", "/select,", str(path)])
 
@@ -244,9 +249,7 @@ class HistoryPage(QWidget):
     def _delete_entries(self, keys: tuple[str, ...]) -> None:
         if not keys:
             return
-        if QMessageBox.question(self, "删除截图历史", f"确定删除选中的 {len(keys)} 条记录吗？",
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if not confirm_action(self, "删除截图历史", f"确定删除选中的 {len(keys)} 条记录吗？"):
             return
         failed = False
         for key in keys:
@@ -255,16 +258,14 @@ class HistoryPage(QWidget):
             else:
                 self._selected.discard(key)
         if failed:
-            QMessageBox.warning(self, "截图历史", "部分记录删除失败，请重试。")
+            show_warning(self, "截图历史", "部分记录删除失败，请重试。")
         self.refresh()
 
     def _clear(self) -> None:
-        if QMessageBox.question(self, "清空截图历史", "确定删除所有截图历史吗？",
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if not confirm_action(self, "清空截图历史", "确定删除所有截图历史吗？"):
             return
         if self._history.clear() != HistoryStatus.DELETED:
-            QMessageBox.warning(self, "截图历史", "清空失败，请重试。")
+            show_warning(self, "截图历史", "清空失败，请重试。")
         else:
             self._selected.clear()
         self.refresh()

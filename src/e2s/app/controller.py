@@ -18,7 +18,7 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import QImage, QKeySequence, QScreen
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
 from e2s.capture.geometry import SelectionRect, move_selection
@@ -39,10 +39,12 @@ from e2s.platform.windows.global_mouse import GlobalMouseCapture
 from e2s.storage.quick_capture import load_quick_capture
 from e2s.platform.windows.uia_selection import WindowsSelector
 from e2s.platform.windows.window_capture import scroll_window_below
+from e2s.ui.native.dialogs import confirm_action, show_warning
 from e2s.ui.native.live_capture import grab_region, release_live_capture
 from e2s.ui.native.overlay import CaptureOverlay
 from e2s.ui.native.pinned_image import PinnedImage
 from e2s.ui.native.quick_capture import QuickCaptureOverlay, screen_for_native_point
+from e2s.ui.native.quick_capture_dialog import QuickCaptureDialog
 from e2s.ui.native.region_recording import RegionRecording
 from e2s.ui.native.scrolling_capture import ScrollingCapture
 from e2s.ui.native.tray import Tray
@@ -83,7 +85,7 @@ class AppController(QObject):
         self._quick_mouse = GlobalMouseCapture(
             load_quick_capture(workbench.settings),
             lambda: not self._is_closing and self._capture_screen is None
-            and self._quick_overlay is None and QApplication.activeModalWidget() is None,
+            and self._quick_overlay is None and not self._has_settings_dialog(),
         )
         self._quick_mouse.drag_event.connect(self._on_quick_drag, Qt.ConnectionType.QueuedConnection)
         if not self._quick_mouse.available:
@@ -166,11 +168,18 @@ class AppController(QObject):
         self.close()
         self._app.quit()
 
+    def _has_settings_dialog(self) -> bool:
+        return any(
+            dialog.isVisible()
+            for dialog_type in (ShortcutDialog, QuickCaptureDialog)
+            for dialog in self._workbench.findChildren(dialog_type)
+        ) or QApplication.activeModalWidget() is not None
+
     @Slot()
     def start_capture(self, source: CaptureSource = CaptureSource.HOTKEY) -> None:
         if self._quick_overlay is not None:
             return
-        if isinstance(QApplication.activeModalWidget(), ShortcutDialog):
+        if self._has_settings_dialog():
             return
         if self._is_closing:
             return
@@ -286,7 +295,7 @@ class AppController(QObject):
                 ),
             )
         except (ValueError, KeyError, TypeError, OSError):
-            QMessageBox.warning(self._workbench, "截图历史", "无法恢复这条截图的编辑数据。")
+            show_warning(self._workbench, "截图历史", "无法恢复这条截图的编辑数据。")
             return
         self._capture_screen = screen
         self._capture_source = CaptureSource.WORKBENCH
@@ -568,12 +577,7 @@ class AppController(QObject):
             target = target.with_name(f"{target.name}.png")
         if not target.exists():
             return target, False
-        answer = QMessageBox.question(
-            window, "覆盖截图", f"已存在同名文件，是否覆盖？\n{target}",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
+        if confirm_action(window, "覆盖截图", f"已存在同名文件，是否覆盖？\n{target}"):
             return target, True
         return None, False
 
@@ -690,5 +694,3 @@ class AppController(QObject):
     @Slot(QKeySequence)
     def _replace_hotkey(self, sequence: QKeySequence) -> None:
         self._workbench.show_hotkey_state(self._hotkey.replace(sequence))
-
-

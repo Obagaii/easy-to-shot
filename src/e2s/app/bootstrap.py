@@ -2,11 +2,12 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from e2s import __version__
 from e2s.app.controller import AppController
 from e2s.app.single_instance import SingleInstance, SingleInstanceError
+from e2s.ui.native.dialogs import show_warning
 from e2s.ui.native.tray import Tray, create_app_icon
 from e2s.ui.native.workbench import Workbench
 
@@ -34,7 +35,7 @@ def main() -> int:
         workbench = Workbench(icon)
         tray = Tray(icon)
         if not tray.isSystemTrayAvailable():
-            QMessageBox.critical(None, "Easy to Shot", "无法使用系统托盘。")
+            show_warning(None, "Easy to Shot", "无法使用系统托盘。")
             return 1
         controller = AppController(app, workbench, tray)
         instance.activation_requested.connect(controller.show_workbench)
@@ -44,7 +45,7 @@ def main() -> int:
         finally:
             controller.close()
     except (OSError, SingleInstanceError) as error:
-        QMessageBox.critical(None, "Easy to Shot", str(error))
+        show_warning(None, "Easy to Shot", str(error))
         return 1
     finally:
         if instance is not None:

@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from qfluentwidgets import PlainTextEdit, PushButton
+
 from e2s.capture.qr import CodeDetection
 from e2s.ui.native.toolbar_icons import toolbar_icon
 
@@ -98,7 +100,8 @@ class QrResults:
         """)
         popover.setFixedWidth(max(1, min(344, self._owner.width() - 12)))
         layout = QVBoxLayout(popover)
-        text = QPlainTextEdit(detection.text, popover)
+        text = PlainTextEdit(popover)
+        text.setPlainText(detection.text)
         text.setReadOnly(True)
         text.setAccessibleName("识别结果")
         text.setFixedHeight(min(160, max(46, len(detection.text) // 3)))
@@ -109,12 +112,12 @@ class QrResults:
         actions = QHBoxLayout()
         layout.addLayout(actions)
         actions.addStretch()
-        copy = QPushButton("复制文本", popover)
+        copy = PushButton("复制文本", popover)
         copy.clicked.connect(lambda: _copy_text(detection.text))
         actions.addWidget(copy)
         url = QUrl(detection.text.strip(), QUrl.ParsingMode.StrictMode)
         if url.isValid() and url.scheme() in ("http", "https") and url.host():
-            opening = QPushButton("打开链接", popover)
+            opening = PushButton("打开链接", popover)
 
             def open_link() -> None:
                 if not QDesktopServices.openUrl(url):

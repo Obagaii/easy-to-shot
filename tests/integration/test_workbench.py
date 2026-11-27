@@ -108,6 +108,11 @@ def test_shortcut_dialog_saves_multiple_bindings_and_allows_removing_them(
     )
     dialog._add_entry("Ctrl+K")
     dialog._confirm()
+    from PySide6.QtTest import QTest
+    for _ in range(100):
+        if dialog.result() == QDialog.DialogCode.Accepted:
+            break
+        QTest.qWait(10)
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert load_shortcuts(window.settings, "tool/arrow", ()) == ("2", "Ctrl+K")
     dialog = ShortcutDialog(
@@ -117,6 +122,11 @@ def test_shortcut_dialog_saves_multiple_bindings_and_allows_removing_them(
     while dialog._rows:
         dialog._remove_entry(dialog._rows[0], dialog._buttons[0])
     dialog._confirm()
+    from PySide6.QtTest import QTest
+    for _ in range(100):
+        if dialog.result() == QDialog.DialogCode.Accepted:
+            break
+        QTest.qWait(10)
     assert dialog.result() == QDialog.DialogCode.Accepted
     assert load_shortcuts(window.settings, "tool/arrow", ("2",)) == ()
     window.close()
@@ -180,7 +190,7 @@ def test_about_page_displays_application_icon_and_version(app: QApplication, tmp
 def test_history_filters_selection_pagination_and_clear(app: QApplication, tmp_path: Path, monkeypatch) -> None:
     from datetime import datetime, timezone
 
-    from PySide6.QtWidgets import QMessageBox
+    from e2s.ui.native import history_page
     from e2s.output.ports import TaskResult, TaskState
     from e2s.output.service import OutputSnapshot
 
@@ -201,10 +211,11 @@ def test_history_filters_selection_pagination_and_clear(app: QApplication, tmp_p
         page._source.setCurrentIndex(page._source.findData("save"))
         assert len(page._entries) == 4
         page._date_filter.setChecked(True)
-        page._end.setDate(page._end.date().addDays(-1))
+        page._end.setDate(page._end.getDate().addDays(-1))
+        page._filters_changed()
         assert not page._entries
         page._date_filter.setChecked(False)
-        monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.StandardButton.Yes)
+        monkeypatch.setattr(history_page, "confirm_action", lambda *_args: True)
         page._delete_selected()
         assert window.history.store.count() == 0
         page._clear()
@@ -270,3 +281,36 @@ def test_history_thumbnail_opens_preview_and_switches_screen(app: QApplication, 
     finally:
         window.close()
 
+
+
+
+
+
+def test_shortcut_popup_opens_and_restores_workbench_controls(app, tmp_path):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    from e2s.ui.native.shortcut_dialog import ShortcutDialog
+
+    window = Workbench(create_app_icon(), tmp_path)
+    window.show()
+    app.processEvents()
+    before = window._shortcut_buttons["capture"]
+    other = window._shortcut_buttons["tool/arrow"]
+    visible = []
+
+    def close_dialog():
+        dialog = window.findChild(ShortcutDialog)
+        visible.append(dialog is not None and dialog.isVisible())
+        if dialog is not None:
+            dialog.reject()
+
+    try:
+        QTimer.singleShot(50, close_dialog)
+        before.click()
+        app.processEvents()
+        assert visible == [True]
+        assert before.isVisible()
+        assert other.isVisible()
+        assert before.isEnabled() and other.isEnabled()
+    finally:
+        window.close()

@@ -1,51 +1,37 @@
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QLabel,
-    QLineEdit,
-    QWidget,
-)
+from PySide6.QtWidgets import QFormLayout, QLabel, QLineEdit, QWidget
+from qfluentwidgets import LineEdit, MessageBoxBase, PushButton
 
 from e2s.capture.translation import DEEPSEEK_MODEL
 from e2s.platform.windows.credentials import (
-    CredentialError,
-    delete_deepseek_key,
-    get_deepseek_key,
-    save_deepseek_key,
+    CredentialError, delete_deepseek_key, get_deepseek_key, save_deepseek_key,
 )
 
 
-class DeepSeekSettingsDialog(QDialog):
+class DeepSeekSettingsDialog(MessageBoxBase):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setWindowTitle("AI 翻译设置")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.resize(420, 170)
-
-        self._key = QLineEdit(self, echoMode=QLineEdit.EchoMode.Password)
+        self.widget.setMinimumWidth(420)
+        self._key = LineEdit()
+        self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key.setAccessibleName("DeepSeek API Key")
         self._key.setPlaceholderText("输入自己的 DeepSeek API Key")
-        self._status = QLabel(self, wordWrap=True)
-
-        buttons = QDialogButtonBox(self)
-        save = buttons.addButton("保存", QDialogButtonBox.ButtonRole.AcceptRole)
-        self._remove = buttons.addButton("移除已保存的 Key", QDialogButtonBox.ButtonRole.ActionRole)
-        buttons.addButton("取消", QDialogButtonBox.ButtonRole.RejectRole)
-        save.clicked.connect(self._save_key)
+        self._status = QLabel(wordWrap=True)
+        self._remove = PushButton("移除已保存的 Key")
         self._remove.clicked.connect(self._remove_key)
-        buttons.rejected.connect(self.reject)
-        save.setEnabled(False)
-        self._key.textChanged.connect(lambda text: save.setEnabled(bool(text.strip())))
-
-        form = QFormLayout(self)
-        form.addRow("服务商", QLabel("DeepSeek", self))
-        form.addRow("翻译模型", QLabel(DEEPSEEK_MODEL, self))
+        self.yesButton.setText("保存")
+        self.cancelButton.setText("取消")
+        self.yesButton.setEnabled(False)
+        self._key.textChanged.connect(lambda text: self.yesButton.setEnabled(bool(text.strip())))
+        form = QFormLayout()
+        form.addRow("服务商", QLabel("DeepSeek"))
+        form.addRow("翻译模型", QLabel(DEEPSEEK_MODEL))
         form.addRow("API Key", self._key)
-        form.addRow(self._status)
-        form.addRow(buttons)
-
+        self.viewLayout.addLayout(form)
+        self.viewLayout.addWidget(self._status)
+        self.viewLayout.addWidget(self._remove)
         try:
             is_configured = bool(get_deepseek_key())
         except CredentialError as error:
@@ -59,14 +45,14 @@ class DeepSeekSettingsDialog(QDialog):
             )
         self._key.setFocus()
 
-    def _save_key(self) -> None:
+    def validate(self) -> bool:
         try:
             save_deepseek_key(self._key.text())
         except (CredentialError, ValueError) as error:
             self._status.setText(str(error))
-        else:
-            self._key.clear()
-            self.accept()
+            return False
+        self._key.clear()
+        return True
 
     def _remove_key(self) -> None:
         try:

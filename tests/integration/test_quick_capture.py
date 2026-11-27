@@ -100,15 +100,20 @@ def test_quick_capture_dialog_selects_binding_and_cancel_preserves_settings(app,
         dialog._keys["alt"].setChecked(True)
         dialog._button.setCurrentIndex(dialog._button.findData("right"))
         dialog._confirm()
+        from PySide6.QtTest import QTest
+        for _ in range(100):
+            if dialog.result() == QDialog.DialogCode.Accepted:
+                break
+            QTest.qWait(10)
         assert dialog.result() == QDialog.DialogCode.Accepted
         monkeypatch.setattr(QuickCaptureDialog, "exec", lambda self: QDialog.DialogCode.Rejected)
         window._edit_quick_capture()
         assert window._quick_button.text() == "Win + 左键拖动"
         monkeypatch.setattr(QuickCaptureDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
-        monkeypatch.setattr(QuickCaptureDialog, "binding", lambda self: dialog.binding())
+        selected_binding = dialog.binding()
+        monkeypatch.setattr(QuickCaptureDialog, "binding", lambda self: selected_binding)
         window._edit_quick_capture()
         assert window._quick_button.text() == "Alt + Ctrl + 右键拖动"
-        assert load_quick_capture(window.settings) == changes[-1] == dialog.binding()
+        assert load_quick_capture(window.settings) == changes[-1] == selected_binding
     finally:
         window.close()
-

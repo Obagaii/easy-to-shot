@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
-    QMessageBox,
     QPlainTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -40,6 +39,7 @@ from e2s.capture.recording import RecordingSession
 from e2s.capture.recording_export import RecordingFormat, export_arguments
 from e2s.platform.windows.recording_audio import SystemAudioRecording
 from e2s.platform.windows.window_capture import exclude_capture_window
+from e2s.ui.native.dialogs import confirm_action
 from e2s.ui.native.annotation_controls import CAPTURE_CONTROLS_STYLE, describe_control
 from e2s.ui.native.annotation_toolbar import Command, describe_button
 from e2s.ui.native.live_capture import LiveSelectionOutline
@@ -464,9 +464,9 @@ class RegionRecording(QDialog):
         path = Path(dialog.selectedFiles()[0])
         if path.suffix.lower() != f".{output_format.value}":
             path = path.with_suffix(f".{output_format.value}")
-            if path.exists() and QMessageBox.question(
+            if path.exists() and not confirm_action(
                 self, "覆盖录像", f"已存在同名文件，是否覆盖？\n{path}"
-            ) != QMessageBox.StandardButton.Yes:
+            ):
                 return
         self._export(path)
 
