@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from qfluentwidgets import (
-    CardWidget, ComboBox, FluentIcon, LineEdit, NavigationInterface,
+    CardWidget, ComboBox, LineEdit, NavigationInterface,
     PrimaryPushButton, PushButton,
 )
 
@@ -108,14 +108,15 @@ class Workbench(QMainWindow):
         self._navigation.setExpandWidth(176)
         self._navigation.expand(False)
         entries = (
-            ("hotkey", FluentIcon.SETTING, "全局热键"),
-            ("quick", FluentIcon.SPEED_HIGH, "快速截图"),
-            ("history", FluentIcon.HISTORY, "截图历史"),
-            ("ocr", FluentIcon.LANGUAGE, "OCR 和翻译"),
-            ("model", FluentIcon.ROBOT, "AI 模型"),
-            ("about", FluentIcon.INFO, "关于"),
+            ("hotkey", "全局热键"),
+            ("quick", "快速截图"),
+            ("history", "截图历史"),
+            ("ocr", "OCR 和翻译"),
+            ("model", "AI 模型"),
+            ("about", "关于"),
         )
-        for index, (route, icon, label) in enumerate(entries):
+        for index, (route, label) in enumerate(entries):
+            icon = QIcon(str(Path(__file__).parent / "assets" / f"nav-{route}.svg"))
             self._navigation.addItem(
                 route, icon, label, onClick=lambda _checked=False, i=index: self._change_page(i)
             )
