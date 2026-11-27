@@ -17,10 +17,11 @@ from PySide6.QtGui import (
     QScreen,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QMenu, QToolButton, QWidget
 
 from e2s.capture.geometry import ResizeHandle
 from e2s.ui.native.resize_handles import draw_resize_frame, frame_handle_positions, resize_cursor
+from e2s.ui.native.toolbar_icons import toolbar_icon
 
 _MIN_VISIBLE_DIP = 24
 _MAX_SCALE = 4.0
@@ -42,6 +43,7 @@ class _ResizeDrag:
 class PinnedImage(QWidget):
     """Show an owned copy-on-write view of the original image on the GUI thread."""
 
+    edit_requested = Signal()
     copy_requested = Signal()
     save_requested = Signal()
     closed = Signal()
@@ -66,6 +68,12 @@ class PinnedImage(QWidget):
         self.setToolTip("拖动图片移动 · 拖动手柄或滚轮缩放 · 右键打开菜单")
         self.setCursor(Qt.CursorShape.OpenHandCursor)
 
+        self._edit_button = self._action_button("edit_text", "编辑贴图")
+        self._edit_button.clicked.connect(self.edit_requested.emit)
+        self._close_button = self._action_button("cancel", "关闭贴图")
+        self._close_button.clicked.connect(self.close)
+        self._place_action_buttons()
+
         self._menu = QMenu(self)
         copy_action = self._menu.addAction("复制", self.copy_requested.emit)
         copy_action.setShortcut(QKeySequence.StandardKey.Copy)
@@ -78,6 +86,36 @@ class PinnedImage(QWidget):
         close_action.setShortcuts(
             [QKeySequence(Qt.Key.Key_Escape), QKeySequence.StandardKey.Close]
         )
+
+    def _action_button(self, icon: str, label: str) -> QToolButton:
+        button = QToolButton(self)
+        button.setIcon(toolbar_icon(icon))
+        button.setIconSize(QSize(19, 19))
+        button.setFixedSize(30, 30)
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet(
+            "QToolButton { background: rgba(255, 255, 255, 235); border: 1px solid #d9d9d9; "
+            "border-radius: 6px; } QToolButton:hover { background: #e8f2ff; }"
+        )
+        button.hide()
+        return button
+
+    def _place_action_buttons(self) -> None:
+        self._close_button.move(max(0, self.width() - 42), 12)
+        self._edit_button.move(max(0, self.width() - 78), 12)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._place_action_buttons()
+
+    def set_image(self, image: QImage) -> None:
+        if image.isNull():
+            raise ValueError("A pinned image must have pixels")
+        self._image = QImage(image)
+        self._scale = self.width() / image.width()
+        self.update()
 
     def show_at(self, screen: QScreen, origin_dip: QPoint) -> None:
         """Place the preview at the capture location in Qt desktop coordinates."""
@@ -123,6 +161,8 @@ class PinnedImage(QWidget):
             super().mousePressEvent(event)
             return
 
+        self._edit_button.show()
+        self._close_button.show()
         self._resize_drag = None
         self._drag_offset = None
         position = event.globalPosition()

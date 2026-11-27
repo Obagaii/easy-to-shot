@@ -18,7 +18,7 @@ def load_quick_capture(settings: QSettings, action: str = "copy") -> QuickCaptur
         button = default_button
     modifiers = frozenset(
         key for key in ("win", "alt", "ctrl")
-        if settings.value(f"{prefix}/{key}", key == "win", type=bool)
+        if settings.value(f"{prefix}/{key}", key == ("ctrl" if action == "pin" else "win"), type=bool)
     )
     return QuickCaptureBinding(
         button, modifiers, settings.value(f"{prefix}/enabled", True, type=bool)

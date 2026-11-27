@@ -243,7 +243,10 @@ class Workbench(QMainWindow):
     def _quick_capture_page(self) -> QWidget:
         page, layout = self._page("快速截图", "配置激活按键和鼠标拖动的快捷操作。")
         self._quick_buttons = {}
-        self._quick_labels = {"copy": "截图复制到剪贴板", "ocr": "文本识别", "translate": "文本翻译"}
+        self._quick_labels = {
+            "copy": "截图复制到剪贴板", "ocr": "文本识别",
+            "translate": "文本翻译", "pin": "快速贴图",
+        }
         for action, label in self._quick_labels.items():
             card = ShortcutCard()
             row = QHBoxLayout(card)

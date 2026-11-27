@@ -187,3 +187,32 @@ def test_pin_renders_capture_frame_and_all_grips_without_hover(app) -> None:
         assert preview.pixelColor(62, 42) == image.pixelColor(62, 42)
     finally:
         pin.close()
+
+
+def test_pin_actions_appear_on_click_and_close_only_that_pin(app):
+    image = QImage(180, 100, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("blue"))
+    pin = PinnedImage(image)
+    other = PinnedImage(image)
+    try:
+        screen = app.primaryScreen()
+        pin.show_at(screen, screen.availableGeometry().topLeft() + QPoint(100, 100))
+        other.show_at(screen, screen.availableGeometry().topLeft() + QPoint(350, 100))
+        assert pin._edit_button.isHidden() and pin._close_button.isHidden()
+        requested = []
+        pin.edit_requested.connect(lambda: requested.append(True))
+        QTest.mouseClick(pin, _LEFT, pos=QPoint(90, 55))
+        assert pin._edit_button.isVisible() and pin._close_button.isVisible()
+        assert pin._close_button.x() == pin.width() - 42
+        assert pin._edit_button.x() == pin.width() - 78
+        pin.resize(220, 100)
+        assert pin._close_button.x() == pin.width() - 42
+        assert pin._edit_button.x() == pin.width() - 78
+        QTest.mouseClick(pin._edit_button, _LEFT)
+        assert requested == [True]
+        QTest.mouseClick(pin._close_button, _LEFT)
+        assert not pin.isVisible() and other.isVisible()
+    finally:
+        if pin.isVisible():
+            pin.close()
+        other.close()

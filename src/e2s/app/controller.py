@@ -17,7 +17,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QImage, QKeySequence, QScreen
+from PySide6.QtGui import QGuiApplication, QImage, QKeySequence, QPainter, QScreen
 from PySide6.QtWidgets import QApplication
 
 from e2s.app.capture_output import copy_snapshot, save_snapshot, to_service_snapshot
@@ -25,7 +25,7 @@ from e2s.capture.geometry import SelectionRect, move_selection
 from e2s.capture.history_session import deserialize_session, serialize_session
 from e2s.capture.ocr import OcrError, OcrLine, ScreenshotRecognizer
 from e2s.capture.qr import CodeDetection, scan_codes
-from e2s.capture.service import CaptureError, capture_frame
+from e2s.capture.service import CaptureError, CaptureFrame, capture_frame
 from e2s.capture.session import CaptureSession, CaptureSource, OutputSnapshot
 from e2s.output.files import SaveResult, build_filename
 from e2s.output.ports import TaskResult, TaskState
@@ -47,6 +47,7 @@ from e2s.ui.native.quick_capture import QuickCaptureOverlay, screen_for_native_p
 from e2s.ui.native.quick_capture_dialog import QuickCaptureDialog
 from e2s.ui.native.region_recording import RegionRecording
 from e2s.ui.native.scrolling_capture import ScrollingCapture
+from e2s.ui.native.toolbar_icons import toolbar_icon
 from e2s.ui.native.tray import Tray
 from e2s.ui.native.workbench import Workbench
 from e2s.ui.native.shortcut_dialog import ShortcutDialog
@@ -84,7 +85,7 @@ class AppController(QObject):
         self._quick_frame = None
         self._quick_screen = None
         self._quick_mouse = GlobalMouseCapture(
-            {action: load_quick_capture(workbench.settings, action) for action in ("copy", "ocr", "translate")},
+            {action: load_quick_capture(workbench.settings, action) for action in ("copy", "ocr", "translate", "pin")},
             lambda: not self._is_closing and self._capture_screen is None
             and self._quick_overlay is None and not self._has_settings_dialog(),
         )
@@ -100,6 +101,8 @@ class AppController(QObject):
         self._activate_after_capture = False
         self._is_closing = False
         self._pinned_images: set[PinnedImage] = set()
+        self._pin_snapshots: dict[PinnedImage, OutputSnapshot] = {}
+        self._editing_pin: PinnedImage | None = None
         self._pending_save: tuple[OutputSnapshot, _OutputWindow] | None = None
         self._recognizer = ScreenshotRecognizer()
         self._ocr_request: tuple[CaptureOverlay, _OcrKey, bool] | None = None
@@ -250,6 +253,16 @@ class AppController(QObject):
                         self._start_ocr(session.create_snapshot(), self._overlay, auto_translate=action == "translate")
                         return
                     snapshot = replace(session.create_snapshot(), history_data=serialize_session(session))
+                    if action == "pin":
+                        if screen is None:
+                            return
+                        geometry = frame.geometry_dip
+                        origin = geometry.topLeft() + QPoint(
+                            round(selection.left * geometry.width() / frame.width_px),
+                            round(selection.top * geometry.height() / frame.height_px),
+                        )
+                        self._show_pin(snapshot, None, screen, origin)
+                        return
                     result = copy_snapshot(snapshot)
                     if result.state is TaskState.SUCCEEDED:
                         self.snapshot_ready.emit(snapshot)
@@ -283,11 +296,19 @@ class AppController(QObject):
     def _open_session(self, session: CaptureSession) -> None:
         self._overlay = CaptureOverlay(session, self._selector)
         self._overlay.cancelled.connect(self._finish_capture)
-        self._overlay.copy_requested.connect(self._copy_snapshot)
+        if self._editing_pin is None:
+            self._overlay.copy_requested.connect(self._copy_snapshot)
+        else:
+            self._overlay.copy_requested.connect(self._apply_pin_edit)
         self._overlay.save_requested.connect(self._save_snapshot)
         self._overlay.pin_requested.connect(self._pin_snapshot)
         self._overlay.action_requested.connect(self._run_capture_action)
         self._overlay.show_on_screen(self._capture_screen)
+        if self._editing_pin is not None and self._overlay._canvas is not None:
+            button = self._overlay._canvas._toolbar._action_buttons["copy"]
+            button.setIcon(toolbar_icon("accept"))
+            button.setToolTip("完成编辑（Enter）")
+            button.setAccessibleName("完成编辑")
 
     @Slot(object)
     def _edit_history(self, item) -> None:
@@ -334,26 +355,88 @@ class AppController(QObject):
         self._show_pin(snapshot, overlay, screen, overlay.selection_origin(snapshot.selection))
 
     def _show_pin(
-        self, snapshot: OutputSnapshot, overlay: CaptureOverlay, screen: QScreen, origin: QPoint
+        self, snapshot: OutputSnapshot, overlay: CaptureOverlay | None, screen: QScreen, origin: QPoint
     ) -> bool:
         try:
             pin = PinnedImage(snapshot.to_image())
         except (MemoryError, ValueError):
-            overlay.set_output_feedback("无法创建贴图，请缩小选区后重试。")
+            if overlay is not None:
+                overlay.set_output_feedback("无法创建贴图，请缩小选区后重试。")
+            else:
+                self._tray.notify("无法创建贴图，请缩小选区后重试。")
             return False
 
         self._pinned_images.add(pin)
-        pin.closed.connect(lambda: self._pinned_images.discard(pin))
+        self._pin_snapshots[pin] = snapshot
+        pin.closed.connect(lambda: self._forget_pin(pin))
+        pin.edit_requested.connect(lambda: self._edit_pin(pin))
         pin.copy_requested.connect(
-            lambda: self._copy_output(replace(snapshot, operation_id=uuid4()), pin)
+            lambda: self._copy_output(replace(self._pin_snapshots[pin], operation_id=uuid4()), pin)
         )
         pin.save_requested.connect(
-            lambda: self._save_output(replace(snapshot, operation_id=uuid4()), pin)
+            lambda: self._save_output(replace(self._pin_snapshots[pin], operation_id=uuid4()), pin)
         )
         pin.show_at(screen, origin)
         result = TaskResult(str(snapshot.operation_id), TaskState.SUCCEEDED)
-        self._complete_output(snapshot, result, "pin", overlay)
+        if overlay is None:
+            self.snapshot_ready.emit(snapshot)
+        self._complete_output(snapshot, result, "pin", overlay or pin)
         return True
+
+    def _forget_pin(self, pin: PinnedImage) -> None:
+        self._pinned_images.discard(pin)
+        self._pin_snapshots.pop(pin, None)
+        if self._editing_pin is pin:
+            self._editing_pin = None
+
+    def _edit_pin(self, pin: PinnedImage) -> None:
+        if self._is_closing or self._capture_screen is not None or self._quick_overlay is not None:
+            self._tray.notify("请先完成当前截图，再编辑贴图。")
+            return
+        screen = QGuiApplication.screenAt(pin.geometry().center())
+        if screen is None or not screen.geometry().contains(pin.geometry()):
+            self._tray.notify("请将贴图完整移入一个屏幕后再编辑。")
+            return
+        pin.hide()
+        try:
+            frame = capture_frame(screen)
+            geometry = frame.geometry_dip
+            rect = pin.geometry().translated(-geometry.x(), -geometry.y())
+            left = round(rect.left() * frame.width_px / geometry.width())
+            top = round(rect.top() * frame.height_px / geometry.height())
+            right = round((rect.right() + 1) * frame.width_px / geometry.width())
+            bottom = round((rect.bottom() + 1) * frame.height_px / geometry.height())
+            selection = SelectionRect(left, top, right, bottom)
+            if not selection.fits(frame.width_px, frame.height_px):
+                raise ValueError("Invalid pin selection")
+            image = frame.image
+            with QPainter(image) as painter:
+                painter.drawImage(QRect(left, top, right - left, bottom - top), pin._image)
+            session = CaptureSession(CaptureFrame(frame.screen_id, geometry, image), CaptureSource.HOTKEY)
+            session.set_selection(selection)
+            self._editing_pin = pin
+            self._capture_screen = screen
+            self._capture_source = CaptureSource.HOTKEY
+            self._open_session(session)
+        except (CaptureError, MemoryError, ValueError):
+            self._finish_capture()
+            if pin in self._pinned_images:
+                pin.show()
+            self._tray.notify("无法打开贴图编辑，请重试。")
+
+    @Slot(object)
+    def _apply_pin_edit(self, snapshot: OutputSnapshot) -> None:
+        pin = self._editing_pin
+        if pin is None or pin not in self._pinned_images:
+            return
+        try:
+            pin.set_image(snapshot.to_image())
+        except (MemoryError, ValueError):
+            if self._overlay is not None:
+                self._overlay.set_output_feedback("无法更新贴图，请重试。")
+            return
+        self._pin_snapshots[pin] = snapshot
+        self._finish_capture()
 
     @Slot(str, object)
     def _run_capture_action(self, name: str, snapshot: OutputSnapshot) -> None:
@@ -684,6 +767,11 @@ class AppController(QObject):
             self._overlay.hide()
             self._overlay.deleteLater()
             self._overlay = None
+
+        pin, self._editing_pin = self._editing_pin, None
+        if pin is not None and pin in self._pinned_images and not self._is_closing:
+            pin.show()
+            pin.raise_()
 
         previous, self._previous_window = self._previous_window, None
         reactivate, self._activate_after_capture = self._activate_after_capture, False
