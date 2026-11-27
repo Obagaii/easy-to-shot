@@ -22,14 +22,16 @@ def binding_label(binding: QuickCaptureBinding) -> str:
 
 
 class QuickCaptureDialog(MessageBoxBase):
-    def __init__(self, binding: QuickCaptureBinding, parent: QWidget) -> None:
+    def __init__(self, binding: QuickCaptureBinding, parent: QWidget, *,
+                 title: str = "截图复制到剪贴板", conflict=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("截图复制到剪贴板的按键配置")
+        self._conflict = conflict
+        self.setWindowTitle(f"{title}的按键配置")
         self.widget.setMinimumWidth(520)
         layout = self.viewLayout
         layout.setSpacing(16)
         header = QHBoxLayout()
-        heading = QLabel("“截图复制到剪贴板”的鼠标配置")
+        heading = QLabel(f"“{title}”的鼠标配置")
         heading.setStyleSheet("font-size: 20px; font-weight: 600;")
         header.addWidget(heading, 1)
         close = TransparentToolButton(FluentIcon.CLOSE)
@@ -61,6 +63,9 @@ class QuickCaptureDialog(MessageBoxBase):
             self._button.addItem(label, userData=value)
         self._button.setCurrentIndex(self._button.findData(binding.button))
         layout.addWidget(self._button)
+        self._error = QLabel(wordWrap=True)
+        self._error.setStyleSheet("color: #c42b1c;")
+        layout.addWidget(self._error)
         self.cancelButton.setText("取消")
         self.yesButton.setText("确定")
         self.buttonLayout.removeWidget(self.yesButton)
@@ -77,6 +82,11 @@ class QuickCaptureDialog(MessageBoxBase):
         modifiers = frozenset(key for key, action in self._keys.items() if action.isChecked())
         return QuickCaptureBinding(str(self._button.currentData()), modifiers, bool(modifiers))
 
-    def _confirm(self) -> None:
-        self.accept()
+    def validate(self) -> bool:
+        error = self._conflict(self.binding()) if self._conflict else ""
+        self._error.setText(error)
+        return not error
 
+    def _confirm(self) -> None:
+        if self.validate():
+            self.accept()

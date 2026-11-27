@@ -15,11 +15,12 @@ class _MouseInfo(ctypes.Structure):
 
 
 class GlobalMouseCapture(QObject):
-    drag_event = Signal(str, int, int)
+    drag_event = Signal(str, int, int, str)
 
-    def __init__(self, binding: QuickCaptureBinding, available: Callable[[], bool]) -> None:
+    def __init__(self, bindings: dict[str, QuickCaptureBinding], available: Callable[[], bool]) -> None:
         super().__init__()
-        self.binding = binding
+        self.bindings = bindings
+        self._action = "copy"
         self._available = available
         self._active = False
         self._button = None
@@ -71,19 +72,23 @@ class GlobalMouseCapture(QObject):
                 if self._active:
                     if event and not event[1] and event[0] == self._button:
                         self._active = False
-                        self.drag_event.emit("finish", info.pt.x, info.pt.y)
+                        self.drag_event.emit("finish", info.pt.x, info.pt.y, self._action)
                         return 1
                     if message == 0x200:
-                        self.drag_event.emit("move", info.pt.x, info.pt.y)
-                elif event and event[1] and self.binding.enabled and self.binding.modifiers:
+                        self.drag_event.emit("move", info.pt.x, info.pt.y, self._action)
+                elif event and event[1]:
                     button = "side" if event[0].startswith("side") else event[0]
-                    if button == self.binding.button and self._modifiers() == self.binding.modifiers and self._available():
-                        if self.binding.modifiers & {"win", "alt"}:
+                    modifiers = self._modifiers()
+                    matches = [(action, binding) for action, binding in self.bindings.items()
+                               if binding.enabled and binding.modifiers
+                               and button == binding.button and modifiers == binding.modifiers]
+                    if len(matches) == 1 and self._available():
+                        self._action, binding = matches[0]
+                        if binding.modifiers & {"win", "alt"}:
                             self._user32.keybd_event(0xE8, 0, 0, 0)
                             self._user32.keybd_event(0xE8, 0, 2, 0)
                         self._active = True
                         self._button = event[0]
-                        self.drag_event.emit("begin", info.pt.x, info.pt.y)
+                        self.drag_event.emit("begin", info.pt.x, info.pt.y, self._action)
                         return 1
         return self._user32.CallNextHookEx(self._hook, code, message, data)
-

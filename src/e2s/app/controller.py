@@ -82,8 +82,9 @@ class AppController(QObject):
         self._hotkey = GlobalHotkey(app, self.start_capture)
         self._quick_overlay = None
         self._quick_frame = None
+        self._quick_screen = None
         self._quick_mouse = GlobalMouseCapture(
-            load_quick_capture(workbench.settings),
+            {action: load_quick_capture(workbench.settings, action) for action in ("copy", "ocr")},
             lambda: not self._is_closing and self._capture_screen is None
             and self._quick_overlay is None and not self._has_settings_dialog(),
         )
@@ -208,10 +209,10 @@ class AppController(QObject):
 
     @Slot(object)
     def _set_quick_binding(self, binding) -> None:
-        self._quick_mouse.binding = binding
+        self._quick_mouse.bindings = binding
 
-    @Slot(str, int, int)
-    def _on_quick_drag(self, phase: str, x: int, y: int) -> None:
+    @Slot(str, int, int, str)
+    def _on_quick_drag(self, phase: str, x: int, y: int, action: str = "copy") -> None:
         if self._is_closing:
             return
         if phase == "begin":
@@ -226,19 +227,28 @@ class AppController(QObject):
             except CaptureError as error:
                 self._tray.notify(str(error))
                 return
+            self._quick_screen = screen
             self._quick_overlay = QuickCaptureOverlay(screen, self._quick_frame, bounds, (x, y))
             self._quick_overlay.show()
         elif self._quick_overlay is not None:
             self._quick_overlay.update_end(x, y)
             if phase == "finish":
                 selection = self._quick_overlay.selection()
-                frame = self._quick_frame
+                frame, screen = self._quick_frame, self._quick_screen
                 self._close_quick_capture()
                 if selection is None or frame is None:
                     return
                 try:
                     session = CaptureSession(frame, CaptureSource.HOTKEY)
                     session.set_selection(selection)
+                    if action == "ocr":
+                        if screen is None:
+                            return
+                        self._capture_screen = screen
+                        self._capture_source = CaptureSource.HOTKEY
+                        self._open_session(session)
+                        self._start_ocr(session.create_snapshot(), self._overlay)
+                        return
                     snapshot = replace(session.create_snapshot(), history_data=serialize_session(session))
                     result = copy_snapshot(snapshot)
                     if result.state is TaskState.SUCCEEDED:
@@ -255,6 +265,7 @@ class AppController(QObject):
             self._quick_overlay.deleteLater()
             self._quick_overlay = None
         self._quick_frame = None
+        self._quick_screen = None
 
     @Slot()
     def _show_frozen_frame(self) -> None:

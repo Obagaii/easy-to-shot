@@ -66,7 +66,7 @@ def test_global_mouse_matches_and_consumes_a_drag(app):
         def CallNextHookEx(self, *_args):
             return 0
 
-    mouse = GlobalMouseCapture(QuickCaptureBinding(), lambda: True)
+    mouse = GlobalMouseCapture({"copy": QuickCaptureBinding(), "ocr": QuickCaptureBinding("right")}, lambda: True)
     mouse.close()
     mouse._user32 = User32()
     events = []
@@ -80,6 +80,11 @@ def test_global_mouse_matches_and_consumes_a_drag(app):
     assert mouse._handle(0, 0x202, address) == 1
     assert [event[0] for event in events] == ["begin", "move", "finish"]
     assert len(mouse._user32.masked) == 2
+    assert mouse._handle(0, 0x204, address) == 1
+    assert mouse._handle(0, 0x205, address) == 1
+    assert events[-1] == ("finish", 30, 40, "ocr")
+    mouse.bindings["ocr"] = QuickCaptureBinding()
+    assert mouse._handle(0, 0x201, address) == 0
 
 
 def test_quick_capture_dialog_selects_binding_and_cancel_preserves_settings(app, tmp_path, monkeypatch):
@@ -114,6 +119,38 @@ def test_quick_capture_dialog_selects_binding_and_cancel_preserves_settings(app,
         monkeypatch.setattr(QuickCaptureDialog, "binding", lambda self: selected_binding)
         window._edit_quick_capture()
         assert window._quick_button.text() == "Alt + Ctrl + 右键拖动"
-        assert load_quick_capture(window.settings) == changes[-1] == selected_binding
+        assert load_quick_capture(window.settings) == changes[-1]["copy"] == selected_binding
     finally:
         window.close()
+
+
+def test_quick_ocr_opens_capture_session_with_selected_area(app, tmp_path, monkeypatch):
+    from e2s.app import controller as controller_module
+    from e2s.app.controller import AppController
+    from e2s.ui.native.tray import Tray, create_app_icon
+    from e2s.ui.native.workbench import Workbench
+
+    icon = create_app_icon()
+    window = Workbench(icon, tmp_path)
+    controller = AppController(app, window, Tray(icon))
+    image = QImage(100, 80, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("white"))
+    frame = CaptureFrame("display", QRect(0, 0, 100, 80), image)
+    screen = app.primaryScreen()
+    monkeypatch.setattr(controller_module, "screen_for_native_point", lambda *_: (screen, (0, 0, 100, 80)))
+    monkeypatch.setattr(controller_module, "capture_frame", lambda *_: frame)
+    received = []
+    overlay = object()
+    monkeypatch.setattr(controller, "_open_session", lambda session: setattr(controller, "_overlay", overlay))
+    monkeypatch.setattr(controller, "_start_ocr", lambda snapshot, target: received.append((snapshot, target)))
+    try:
+        assert load_quick_capture(window.settings, "ocr") == QuickCaptureBinding("right")
+        assert window._quick_buttons["ocr"].text() == "Win + 右键拖动"
+        controller._on_quick_drag("begin", 10, 20, "ocr")
+        controller._on_quick_drag("finish", 60, 70, "ocr")
+        assert len(received) == 1
+        assert (received[0][0].width_px, received[0][0].height_px) == (50, 50)
+        assert received[0][1] is overlay
+    finally:
+        controller._overlay = None
+        controller.close()
