@@ -12,7 +12,7 @@ class QuickCaptureBinding:
 
 def load_quick_capture(settings: QSettings, action: str = "copy") -> QuickCaptureBinding:
     prefix = "quick_capture" if action == "copy" else f"quick_capture/{action}"
-    default_button = "left" if action == "copy" else "right"
+    default_button = {"copy": "left", "ocr": "right", "translate": "middle"}.get(action, "left")
     button = str(settings.value(f"{prefix}/button", default_button))
     if button not in {"left", "right", "middle", "side"}:
         button = default_button

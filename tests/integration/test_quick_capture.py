@@ -66,7 +66,8 @@ def test_global_mouse_matches_and_consumes_a_drag(app):
         def CallNextHookEx(self, *_args):
             return 0
 
-    mouse = GlobalMouseCapture({"copy": QuickCaptureBinding(), "ocr": QuickCaptureBinding("right")}, lambda: True)
+    mouse = GlobalMouseCapture({"copy": QuickCaptureBinding(), "ocr": QuickCaptureBinding("right"),
+                                "translate": QuickCaptureBinding("middle")}, lambda: True)
     mouse.close()
     mouse._user32 = User32()
     events = []
@@ -83,6 +84,9 @@ def test_global_mouse_matches_and_consumes_a_drag(app):
     assert mouse._handle(0, 0x204, address) == 1
     assert mouse._handle(0, 0x205, address) == 1
     assert events[-1] == ("finish", 30, 40, "ocr")
+    assert mouse._handle(0, 0x207, address) == 1
+    assert mouse._handle(0, 0x208, address) == 1
+    assert events[-1] == ("finish", 30, 40, "translate")
     mouse.bindings["ocr"] = QuickCaptureBinding()
     assert mouse._handle(0, 0x201, address) == 0
 
@@ -142,7 +146,7 @@ def test_quick_ocr_opens_capture_session_with_selected_area(app, tmp_path, monke
     received = []
     overlay = object()
     monkeypatch.setattr(controller, "_open_session", lambda session: setattr(controller, "_overlay", overlay))
-    monkeypatch.setattr(controller, "_start_ocr", lambda snapshot, target: received.append((snapshot, target)))
+    monkeypatch.setattr(controller, "_start_ocr", lambda snapshot, target, auto_translate=False: received.append((snapshot, target, auto_translate)))
     try:
         assert load_quick_capture(window.settings, "ocr") == QuickCaptureBinding("right")
         assert window._quick_buttons["ocr"].text() == "Win + 右键拖动"
@@ -151,6 +155,15 @@ def test_quick_ocr_opens_capture_session_with_selected_area(app, tmp_path, monke
         assert len(received) == 1
         assert (received[0][0].width_px, received[0][0].height_px) == (50, 50)
         assert received[0][1] is overlay
+        assert received[0][2] is False
+        assert load_quick_capture(window.settings, "translate") == QuickCaptureBinding("middle")
+        assert window._quick_buttons["translate"].text() == "Win + 中键拖动"
+        controller._capture_screen = None
+        controller._on_quick_drag("begin", 10, 20, "translate")
+        controller._on_quick_drag("finish", 60, 70, "translate")
+        assert len(received) == 2
+        assert (received[1][0].width_px, received[1][0].height_px) == (50, 50)
+        assert received[1][1:] == (overlay, True)
     finally:
         controller._overlay = None
         controller.close()

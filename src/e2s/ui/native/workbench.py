@@ -243,7 +243,7 @@ class Workbench(QMainWindow):
     def _quick_capture_page(self) -> QWidget:
         page, layout = self._page("快速截图", "配置激活按键和鼠标拖动的快捷操作。")
         self._quick_buttons = {}
-        self._quick_labels = {"copy": "截图复制到剪贴板", "ocr": "文本识别"}
+        self._quick_labels = {"copy": "截图复制到剪贴板", "ocr": "文本识别", "translate": "文本翻译"}
         for action, label in self._quick_labels.items():
             card = ShortcutCard()
             row = QHBoxLayout(card)
@@ -266,9 +266,9 @@ class Workbench(QMainWindow):
         bindings = {action: load_quick_capture(self.settings, action) for action in self._quick_buttons}
         for action, button in self._quick_buttons.items():
             button.setText(binding_label(bindings[action]))
-        copy, ocr = bindings["copy"], bindings["ocr"]
-        conflict = (copy.enabled and ocr.enabled and copy.modifiers
-                    and copy.button == ocr.button and copy.modifiers == ocr.modifiers)
+        active = [binding for binding in bindings.values() if binding.enabled and binding.modifiers]
+        combinations = {(binding.button, binding.modifiers) for binding in active}
+        conflict = len(combinations) < len(active)
         self._quick_status.setText("两个操作使用了相同组合，请调整其中一项。" if conflict else "")
 
     def _edit_quick_capture(self, action: str = "copy") -> None:

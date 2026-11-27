@@ -84,7 +84,7 @@ class AppController(QObject):
         self._quick_frame = None
         self._quick_screen = None
         self._quick_mouse = GlobalMouseCapture(
-            {action: load_quick_capture(workbench.settings, action) for action in ("copy", "ocr")},
+            {action: load_quick_capture(workbench.settings, action) for action in ("copy", "ocr", "translate")},
             lambda: not self._is_closing and self._capture_screen is None
             and self._quick_overlay is None and not self._has_settings_dialog(),
         )
@@ -241,13 +241,13 @@ class AppController(QObject):
                 try:
                     session = CaptureSession(frame, CaptureSource.HOTKEY)
                     session.set_selection(selection)
-                    if action == "ocr":
+                    if action in {"ocr", "translate"}:
                         if screen is None:
                             return
                         self._capture_screen = screen
                         self._capture_source = CaptureSource.HOTKEY
                         self._open_session(session)
-                        self._start_ocr(session.create_snapshot(), self._overlay)
+                        self._start_ocr(session.create_snapshot(), self._overlay, auto_translate=action == "translate")
                         return
                     snapshot = replace(session.create_snapshot(), history_data=serialize_session(session))
                     result = copy_snapshot(snapshot)
