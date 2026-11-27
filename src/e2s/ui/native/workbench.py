@@ -14,6 +14,7 @@ from qfluentwidgets import (
 )
 
 from e2s import __version__
+from e2s.capture.ocr_models import MODEL_LABELS, ModelDownloader, model_ready
 from e2s.capture.translation import DEEPSEEK_MODEL
 from e2s.platform.windows.credentials import (
     CredentialError, delete_deepseek_key, get_deepseek_key, save_deepseek_key,
@@ -23,6 +24,7 @@ from e2s.storage.history import HistoryService, HistoryStore
 from e2s.storage.quick_capture import QuickCaptureBinding, load_quick_capture, save_quick_capture
 from e2s.storage.shortcuts import canonical_shortcut, load_shortcuts, save_shortcuts
 from e2s.ui.native.annotation_toolbar import _ACTION_COMMANDS, _TOOL_COMMANDS
+from e2s.ui.native.dialogs import confirm_action
 from e2s.ui.native.history_page import HistoryPage
 from e2s.ui.native.shortcut_dialog import ShortcutDialog
 from e2s.ui.native.quick_capture_dialog import QuickCaptureDialog, binding_label
@@ -78,6 +80,10 @@ class Workbench(QMainWindow):
         root = data_root or Path(QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.AppLocalDataLocation
         ))
+        self.model_root = root
+        self._model_downloader = ModelDownloader(self)
+        self._model_downloader.progress.connect(self._ocr_download_progress)
+        self._model_downloader.finished.connect(self._ocr_download_finished)
         self.history = HistoryService(HistoryStore(root))
         self.settings = QSettings(str(root / "workbench.ini"), QSettings.Format.IniFormat)
 
@@ -313,8 +319,21 @@ class Workbench(QMainWindow):
 
     def _ocr_page(self) -> QWidget:
         page, layout = self._page("OCR 和翻译", "配置文字识别和翻译的默认行为。")
-        card, content = self._card("文字识别", "使用本地 PP-OCRv6 Small 识别中英文，无需上传截图。")
+        card, content = self._card("文字识别", "使用本地 PP-OCRv6 识别文字，无需上传截图。")
         content.addWidget(QLabel("识别引擎：RapidOCR · ONNX Runtime"))
+        content.addWidget(QLabel("识别模型"))
+        self._ocr_model = ComboBox()
+        for model, label in MODEL_LABELS.items():
+            self._ocr_model.addItem(label, userData=model)
+        selected = str(self.settings.value("ocr/model", "small"))
+        self._ocr_selected = selected if selected in MODEL_LABELS else "small"
+        self._ocr_model.setCurrentIndex(self._ocr_model.findData(self._ocr_selected))
+        self._ocr_model.currentIndexChanged.connect(self._select_ocr_model)
+        content.addWidget(self._ocr_model)
+        self._ocr_model_status = QLabel(
+            "小模型支持的语言较少；中、大模型支持更多语言。", wordWrap=True, objectName="hint"
+        )
+        content.addWidget(self._ocr_model_status)
         layout.addWidget(card)
         card, content = self._card("翻译", "翻译时会将识别文字发送给所选翻译服务；可在截图中更改语言和模型。")
         self._language = ComboBox()
@@ -327,9 +346,65 @@ class Workbench(QMainWindow):
         )
         content.addWidget(QLabel("默认目标语言"))
         content.addWidget(self._language)
+        content.addWidget(QLabel("默认翻译来源"))
+        self._translation_source = ComboBox()
+        self._translation_source.addItem("免费翻译", userData="free")
+        self._translation_source.addItem("DeepSeek", userData="deepseek")
+        source = self.settings.value("translation/source", "free")
+        self._translation_source.setCurrentIndex(max(0, self._translation_source.findData(source)))
+        self._translation_source.currentIndexChanged.connect(
+            lambda: self.settings.setValue("translation/source", self._translation_source.currentData())
+        )
+        content.addWidget(self._translation_source)
         layout.addWidget(card)
         layout.addStretch()
-        return page
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _select_ocr_model(self) -> None:
+        model = self._ocr_model.currentData()
+        if model == self._ocr_selected:
+            return
+        if model_ready(self.model_root, model):
+            self._commit_ocr_model(model)
+            return
+        accepted = confirm_action(
+            self, "下载识别模型", f"{MODEL_LABELS[model]} 尚未下载，是否下载后切换？"
+        )
+        if not accepted:
+            self._restore_ocr_model()
+            return
+        self._ocr_model.setEnabled(False)
+        self._ocr_model_status.setText("正在下载模型，请稍候…")
+        self._model_downloader.start(self.model_root, model)
+
+    def _restore_ocr_model(self) -> None:
+        self._ocr_model.blockSignals(True)
+        self._ocr_model.setCurrentIndex(self._ocr_model.findData(self._ocr_selected))
+        self._ocr_model.blockSignals(False)
+
+    def _commit_ocr_model(self, model: str) -> None:
+        self._ocr_selected = model
+        self.settings.setValue("ocr/model", model)
+        self._ocr_model_status.setText("已切换模型，小模型支持的语言较少。")
+
+    def _ocr_download_progress(self, index: int, count: int, received: int, total: int) -> None:
+        size = f"{received / 1048576:.1f} MB"
+        if total:
+            size += f" / {total / 1048576:.1f} MB"
+        self._ocr_model_status.setText(f"正在下载模型文件 {index}/{count}：{size}")
+
+    def _ocr_download_finished(self, model: str, error: str) -> None:
+        self._ocr_model.setEnabled(True)
+        if error:
+            self._restore_ocr_model()
+            self._ocr_model_status.setText(f"下载失败：{error}。请检查网络后重试。")
+        else:
+            self._commit_ocr_model(model)
+            self._ocr_model_status.setText("模型下载完成，已切换。")
 
     def _model_page(self) -> QWidget:
         page, layout = self._page("AI 模型", "管理翻译使用的模型和访问凭据。")

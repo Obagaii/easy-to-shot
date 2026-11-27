@@ -314,3 +314,41 @@ def test_shortcut_popup_opens_and_restores_workbench_controls(app, tmp_path):
         assert before.isEnabled() and other.isEnabled()
     finally:
         window.close()
+
+
+def test_ocr_model_download_confirmation_and_translation_source(app, tmp_path, monkeypatch):
+    from e2s.capture.ocr_models import model_files
+    from e2s.ui.native import workbench as module
+
+    window = Workbench(create_app_icon(), tmp_path)
+    downloads = []
+    monkeypatch.setattr(window._model_downloader, "start", lambda root, model: downloads.append((root, model)))
+    monkeypatch.setattr(module, "confirm_action", lambda *_: False)
+    try:
+        assert window._ocr_model.currentData() == "small"
+        window._ocr_model.setCurrentIndex(window._ocr_model.findData("medium"))
+        assert window._ocr_model.currentData() == "small" and downloads == []
+        monkeypatch.setattr(module, "confirm_action", lambda *_: True)
+        window._ocr_model.setCurrentIndex(window._ocr_model.findData("medium"))
+        assert downloads == [(tmp_path, "medium")]
+        assert not window._ocr_model.isEnabled()
+        assert window.settings.value("ocr/model", "small") == "small"
+        window._model_downloader.finished.emit("medium", "网络错误")
+        assert window._ocr_model.currentData() == "small"
+        window._ocr_model.setCurrentIndex(window._ocr_model.findData("medium"))
+        for item in model_files("medium"):
+            path = tmp_path / "ocr_models" / item.name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"model")
+        window._model_downloader.finished.emit("medium", "")
+        assert window.settings.value("ocr/model") == "medium"
+        window._translation_source.setCurrentIndex(window._translation_source.findData("deepseek"))
+        window.settings.sync()
+        restored = Workbench(create_app_icon(), tmp_path)
+        try:
+            assert restored._ocr_model.currentData() == "medium"
+            assert restored._translation_source.currentData() == "deepseek"
+        finally:
+            restored.close()
+    finally:
+        window.close()

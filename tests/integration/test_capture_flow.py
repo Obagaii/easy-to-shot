@@ -1001,6 +1001,7 @@ def test_translation_toolbar_recognizes_then_translates_with_cached_results(
     wait_for(lambda: overlay._ocr_workspace is not None, "automatic translation")
     assert len(calls) == 1
     assert translations == [("Hello", "English", "free")]
+    assert overlay._ocr_workspace._model.currentData() == "free"
     assert not overlay._ocr_workspace._translate.isEnabled()
     overlay._ocr_workspace.close()
     overlay._canvas._toolbar._action_buttons["translate_text"].click()
@@ -1012,6 +1013,13 @@ def test_translation_toolbar_recognizes_then_translates_with_cached_results(
     assert len(translations) == 2
     assert overlay._ocr_workspace._editor.toPlainText() == "Hello"
     assert overlay._ocr_workspace._language.currentData() == "Japanese"
+    overlay._ocr_workspace.close()
+    from e2s.ui.native import ocr_workspace
+    monkeypatch.setattr(ocr_workspace, "get_deepseek_key", lambda: "test-key")
+    workbench._translation_source.setCurrentIndex(workbench._translation_source.findData("deepseek"))
+    overlay._canvas._toolbar._action_buttons["translate_text"].click()
+    assert translations[-1] == ("Hello", "Japanese", "deepseek")
+    assert overlay._ocr_workspace._model.currentData() == "deepseek"
 
 
 def wait_for(check, description: str) -> None:

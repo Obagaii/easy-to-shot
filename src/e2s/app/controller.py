@@ -53,7 +53,7 @@ from e2s.ui.native.workbench import Workbench
 from e2s.ui.native.shortcut_dialog import ShortcutDialog
 
 _OutputWindow = CaptureOverlay | PinnedImage | ScrollingCapture
-type _OcrKey = tuple[SelectionRect, bytes]
+type _OcrKey = tuple[SelectionRect, bytes, str]
 _CAPTURE_SETTLE_MS = 100
 _SAVE_ERRORS = {
     "overwrite_not_confirmed": "目标文件已存在，请重新选择文件或确认覆盖。",
@@ -460,7 +460,8 @@ class AppController(QObject):
     def _start_ocr(
         self, snapshot: OutputSnapshot, overlay: CaptureOverlay, *, auto_translate: bool = False
     ) -> None:
-        key = (snapshot.selection, sha256(snapshot.rgba_pixels).digest())
+        model = self._workbench._ocr_selected
+        key = (snapshot.selection, sha256(snapshot.rgba_pixels).digest(), model)
         cached = self._ocr_cache.get(key)
         if cached is not None:
             self._show_ocr_results(overlay, snapshot, cached, auto_translate=auto_translate)
@@ -468,6 +469,7 @@ class AppController(QObject):
         if self._ocr_request is not None:
             overlay.set_output_feedback("上一项文字识别仍在运行，请稍后重试。")
             return
+        self._recognizer.set_model(self._workbench.model_root, model)
         self._ocr_request = overlay, key, auto_translate
         overlay.set_output_feedback("正在本地识别文字…", is_pending=True)
         self._save_pool.start(lambda: self._recognize_snapshot(snapshot))
@@ -503,7 +505,10 @@ class AppController(QObject):
         overlay.set_output_feedback("" if lines else "选区内未识别到文字。")
         if lines:
             language = self._workbench.settings.value("translation/language", "Simplified Chinese")
-            overlay.show_ocr_results(snapshot, lines, str(language), auto_translate=auto_translate)
+            source = str(self._workbench.settings.value("translation/source", "free"))
+            overlay.show_ocr_results(
+                snapshot, lines, str(language), source=source, auto_translate=auto_translate
+            )
 
     def _scan_snapshot(self, overlay: CaptureOverlay, snapshot: OutputSnapshot) -> None:
         try:

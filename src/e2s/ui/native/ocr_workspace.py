@@ -49,7 +49,7 @@ class OcrWorkspace(QWidget):
     closed = Signal()
 
     def __init__(self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...],
-                 region: QRect, parent: QWidget, *, language: str) -> None:
+                 region: QRect, parent: QWidget, *, language: str, source: str = "free") -> None:
         super().__init__(parent)
         self.setGeometry(parent.rect())
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -127,6 +127,7 @@ class OcrWorkspace(QWidget):
         self._model = ComboBox(self._toolbar)
         self._model.addItem("免费翻译", userData="free")
         self._model.addItem("DeepSeek", userData="deepseek")
+        self._model.setCurrentIndex(max(0, self._model.findData(source)))
         row.addWidget(self._model)
         self._button(row, "关闭文字识别", "cancel", self.close)
         self._toolbar.adjustSize()

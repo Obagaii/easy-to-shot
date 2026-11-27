@@ -209,14 +209,14 @@ class CaptureOverlay(QWidget):
 
     def show_ocr_results(
         self, snapshot: OutputSnapshot, lines: tuple[OcrLine, ...], language: str,
-        *, auto_translate: bool = False
+        *, source: str = "free", auto_translate: bool = False
     ) -> None:
         if self._session.selection != snapshot.selection:
             self.set_output_feedback("截图选区已变化，请重新识别文字。")
             return
         self._dismiss_ocr_workspace()
         region = self._selection_on_screen(snapshot.selection).toAlignedRect()
-        workspace = OcrWorkspace(snapshot, lines, region, self, language=language)
+        workspace = OcrWorkspace(snapshot, lines, region, self, language=language, source=source)
         self._ocr_workspace = workspace
         workspace.closed.connect(lambda: self._close_ocr_workspace(workspace))
         workspace.show()

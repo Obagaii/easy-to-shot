@@ -7,6 +7,7 @@ from PIL import Image
 
 from e2s.annotation.elements import Point
 from e2s.capture.session import OutputSnapshot
+from e2s.capture.ocr_models import model_paths, model_ready
 
 if TYPE_CHECKING:
     from rapidocr import RapidOCR
@@ -27,6 +28,13 @@ class ScreenshotRecognizer:
 
     def __init__(self) -> None:
         self._engine: RapidOCR | None = None
+        self._model = "small"
+        self._model_root: Path | None = None
+
+    def set_model(self, root: Path, model: str) -> None:
+        if (root, model) != (self._model_root, self._model):
+            self._model_root, self._model = root, model
+            self._engine = None
 
     def recognize(self, snapshot: OutputSnapshot) -> tuple[OcrLine, ...]:
         try:
@@ -51,15 +59,13 @@ class ScreenshotRecognizer:
             raise OcrError("文字识别失败，请检查 OCR 组件后重试。") from error
         return tuple(lines)
 
-    @staticmethod
-    def _load_engine() -> "RapidOCR":
+    def _load_engine(self) -> "RapidOCR":
         import rapidocr
 
-        models = Path(rapidocr.__file__).parent / "models"
-        detector = models / "PP-OCRv6_det_small.onnx"
-        recognizer = models / "PP-OCRv6_rec_small.onnx"
-        if not detector.is_file() or not recognizer.is_file():
-            raise FileNotFoundError("Bundled PP-OCRv6 Small models are missing")
+        root = self._model_root or Path(rapidocr.__file__).parent
+        if not model_ready(root, self._model):
+            raise FileNotFoundError("Selected OCR models are missing")
+        detector, recognizer = model_paths(root, self._model)
         return rapidocr.RapidOCR(params={
             "Global.log_level": "warning",
             "Global.use_cls": False,
