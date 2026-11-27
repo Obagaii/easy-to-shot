@@ -16,12 +16,13 @@ def load_quick_capture(settings: QSettings, action: str = "copy") -> QuickCaptur
     button = str(settings.value(f"{prefix}/button", default_button))
     if button not in {"left", "right", "middle", "side"}:
         button = default_button
+    default_modifier = None if action in {"record", "barcode"} else ("ctrl" if action == "pin" else "win")
     modifiers = frozenset(
         key for key in ("win", "alt", "ctrl")
-        if settings.value(f"{prefix}/{key}", key == ("ctrl" if action == "pin" else "win"), type=bool)
+        if settings.value(f"{prefix}/{key}", key == default_modifier, type=bool)
     )
     return QuickCaptureBinding(
-        button, modifiers, settings.value(f"{prefix}/enabled", True, type=bool)
+        button, modifiers, settings.value(f"{prefix}/enabled", action not in {"record", "barcode"}, type=bool)
     )
 
 

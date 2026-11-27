@@ -246,6 +246,7 @@ class Workbench(QMainWindow):
         self._quick_labels = {
             "copy": "截图复制到剪贴板", "ocr": "文本识别",
             "translate": "文本翻译", "pin": "快速贴图",
+            "record": "录像", "barcode": "扫描二维码",
         }
         for action, label in self._quick_labels.items():
             card = ShortcutCard()

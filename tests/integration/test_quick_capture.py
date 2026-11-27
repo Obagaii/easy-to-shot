@@ -11,6 +11,11 @@ def test_quick_capture_binding_defaults_and_persistence(tmp_path):
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     assert load_quick_capture(settings) == QuickCaptureBinding()
     assert load_quick_capture(settings, "pin") == QuickCaptureBinding("left", frozenset({"ctrl"}))
+    for action in ("record", "barcode"):
+        assert load_quick_capture(settings, action) == QuickCaptureBinding("left", frozenset(), False)
+        configured = QuickCaptureBinding("side", frozenset({"alt"}))
+        save_quick_capture(settings, configured, action)
+        assert load_quick_capture(settings, action) == configured
     binding = QuickCaptureBinding("side", frozenset({"ctrl", "alt"}), False)
     save_quick_capture(settings, binding)
     assert load_quick_capture(settings) == binding
@@ -249,4 +254,37 @@ def test_pin_edit_applies_changes_and_cancel_restores_original(app, tmp_path, mo
         controller._finish_capture()
         assert pin.isVisible() and pin._image.pixelColor(0, 0) == QColor("red")
     finally:
+        controller.close()
+
+def test_quick_record_and_barcode_use_selected_area(app, tmp_path, monkeypatch):
+    from e2s.app import controller as controller_module
+    from e2s.app.controller import AppController
+    from e2s.ui.native.tray import Tray, create_app_icon
+    from e2s.ui.native.workbench import Workbench
+
+    icon = create_app_icon()
+    window = Workbench(icon, tmp_path)
+    controller = AppController(app, window, Tray(icon))
+    image = QImage(100, 80, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("white"))
+    frame = CaptureFrame("display", QRect(0, 0, 100, 80), image)
+    screen = app.primaryScreen()
+    monkeypatch.setattr(controller_module, "screen_for_native_point", lambda *_: (screen, (0, 0, 100, 80)))
+    monkeypatch.setattr(controller_module, "capture_frame", lambda *_: frame)
+    overlay = object()
+    received = []
+    monkeypatch.setattr(controller, "_open_session", lambda session: setattr(controller, "_overlay", overlay))
+    monkeypatch.setattr(controller, "_run_capture_action", lambda action, snapshot: received.append((action, snapshot)))
+    try:
+        for action in ("record", "barcode"):
+            assert window._quick_buttons[action].text() == "未设置"
+            assert not controller._quick_mouse.bindings[action].enabled
+            controller._on_quick_drag("begin", 10, 20, action)
+            controller._on_quick_drag("finish", 60, 70, action)
+            assert received[-1][0] == action
+            assert (received[-1][1].width_px, received[-1][1].height_px) == (50, 50)
+            controller._capture_screen = None
+        assert [item[0] for item in received] == ["record", "barcode"]
+    finally:
+        controller._overlay = None
         controller.close()
